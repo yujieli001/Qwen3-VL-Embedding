@@ -1,4 +1,22 @@
-# Qwen3-VL Combined Embedding & Reranker API Service
+# Qwen3-VL API Services
+
+## Services Overview
+
+| Service | Port | Description |
+|---------|------|-------------|
+| Combined API | 10011/10012 | Raw Embedding (10011) + Reranker (10012) |
+| OpenAI Proxy | 10013 | OpenAI-compatible API (for Dify) |
+
+## Quick Start
+
+### Start All Services
+```bash
+# Start combined service (ports 10011, 10012)
+.venv/bin/python servers/start_combined.py
+
+# OR start OpenAI-compatible proxy (port 10013) - Recommended for Dify
+.venv/bin/python servers/openai_proxy.py
+```
 
 A unified API server that provides both Embedding and Reranker functionality.
 

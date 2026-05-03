@@ -1,5 +1,5 @@
 [Unit]
-Description=Qwen3-VL Combined Embedding & Reranker Service
+Description=Qwen3-VL OpenAI-compatible API Service
 After=network.target
 
 [Service]
@@ -9,12 +9,12 @@ Group=li
 WorkingDirectory=/data/Qwen3-VL-Embedding
 Environment="PATH=/data/Qwen3-VL-Embedding/.venv/bin"
 Environment="CUDA_VISIBLE_DEVICES="
-ExecStart=/data/Qwen3-VL-Embedding/.venv/bin/python /data/Qwen3-VL-Embedding/servers/start_combined.py
+ExecStart=/data/Qwen3-VL-Embedding/.venv/bin/python -m uvicorn servers.openai_proxy:app --host 0.0.0.0 --port 10013
 Restart=always
 RestartSec=10
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=embedding-reranker
+SyslogIdentifier=qwen3-vl-api
 
 # Memory and CPU limits
 MemoryMax=32G
