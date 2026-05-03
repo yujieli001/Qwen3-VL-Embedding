@@ -1,0 +1,24 @@
+[Unit]
+Description=Qwen3-VL Combined Embedding & Reranker Service
+After=network.target
+
+[Service]
+Type=simple
+User=li
+Group=li
+WorkingDirectory=/data/Qwen3-VL-Embedding
+Environment="PATH=/data/Qwen3-VL-Embedding/.venv/bin"
+Environment="CUDA_VISIBLE_DEVICES="
+ExecStart=/data/Qwen3-VL-Embedding/.venv/bin/python /data/Qwen3-VL-Embedding/servers/start_combined.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=embedding-reranker
+
+# Memory and CPU limits
+MemoryMax=32G
+CPUQuota=400%
+
+[Install]
+WantedBy=multi-user.target

@@ -159,8 +159,8 @@ def is_video_input(video) -> bool:
 # Define embedder class for processing inputs and generating embeddings
 class Qwen3VLEmbedder():
     def __init__(
-        self, 
-        model_name_or_path: str, 
+        self,
+        model_name_or_path: str,
         max_length: int = MAX_LENGTH,
         min_pixels: int = MIN_PIXELS,
         max_pixels: int = MAX_PIXELS,
@@ -168,9 +168,13 @@ class Qwen3VLEmbedder():
         fps: float = FPS,
         max_frames: int = MAX_FRAMES,
         default_instruction: str = "Represent the user's input.",
+        use_cpu: bool = False,
         **kwargs
     ):
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if use_cpu or "CUDA_VISIBLE_DEVICES" in os.environ and os.environ["CUDA_VISIBLE_DEVICES"] == "":
+            device = torch.device("cpu")
+        else:
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.max_length = max_length
         self.min_pixels = min_pixels

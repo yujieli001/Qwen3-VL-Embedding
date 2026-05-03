@@ -72,7 +72,7 @@ def sample_frames(
 
 
 class Qwen3VLReranker():
-    
+
     def __init__(
         self,
         model_name_or_path: str,
@@ -83,9 +83,13 @@ class Qwen3VLReranker():
         fps: float = FPS,
         max_frames: int = MAX_FRAMES,
         default_instruction: str = "Given a search query, retrieve relevant candidates that answer the query.",
+        use_cpu: bool = False,
         **kwargs,
     ):
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if use_cpu or "CUDA_VISIBLE_DEVICES" in os.environ and os.environ["CUDA_VISIBLE_DEVICES"] == "":
+            self.device = torch.device("cpu")
+        else:
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.max_length = max_length
         self.min_pixels = min_pixels
