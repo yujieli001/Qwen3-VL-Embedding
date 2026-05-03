@@ -5,13 +5,17 @@ Port: 10011 (Embedding), 10012 (Reranker)
 Both services run in a single process with dual ports.
 """
 
+import os
+
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
 import torch
 import logging
 from typing import List, Dict, Any, Optional
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import uvicorn
 
 from src.models.qwen3_vl_embedding import Qwen3VLEmbedder
@@ -44,6 +48,7 @@ class RerankerInput(BaseModel):
     query: Dict[str, Any]
     documents: List[Dict[str, Any]]
     instruction: Optional[str] = None
+    batch_size: int = Field(default=1, gt=0)
 
 
 class RerankerResponse(BaseModel):
@@ -68,6 +73,7 @@ def load_models():
     logger.info(f"Loading embedding model from {embedding_path} on CPU...")
     embedding_model = Qwen3VLEmbedder(
         model_name_or_path=embedding_path,
+        use_cpu=True,
         torch_dtype=torch.float32,
     )
     logger.info("Embedding model loaded successfully")
@@ -75,6 +81,7 @@ def load_models():
     logger.info(f"Loading reranker model from {reranker_path} on CPU...")
     reranker_model = Qwen3VLReranker(
         model_name_or_path=reranker_path,
+        use_cpu=True,
         torch_dtype=torch.float32,
     )
     logger.info("Reranker model loaded successfully")
@@ -192,7 +199,8 @@ async def rerank(input_data: RerankerInput) -> RerankerResponse:
         inputs = {
             "query": input_data.query,
             "documents": input_data.documents,
-            "instruction": input_data.instruction
+            "instruction": input_data.instruction,
+            "batch_size": input_data.batch_size,
         }
         scores = reranker_model.process(inputs)
         return RerankerResponse(scores=scores)

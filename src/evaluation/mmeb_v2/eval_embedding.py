@@ -1,4 +1,6 @@
 import os
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
 import sys
 import time
 import yaml
@@ -9,6 +11,7 @@ import pickle
 import json
 import numpy as np
 import torch.distributed as dist
+from contextlib import nullcontext
 
 from datetime import timedelta
 from tqdm.auto import tqdm
@@ -66,7 +69,12 @@ def encode_embeddings(
     )
 
     for batch_inputs, dataset_info in progress_bar:
-        with torch.autocast(enabled=True, dtype=torch.bfloat16, device_type="cuda"):
+        if torch.cuda.is_available():
+            forward_context = torch.autocast(enabled=True, dtype=torch.bfloat16, device_type="cuda")
+        else:
+            forward_context = nullcontext()
+
+        with forward_context:
             reps = model.encode_input(batch_inputs)  # Returns [Batch, Dim]
             reps = reps.detach()
 
@@ -106,10 +114,9 @@ def encode_embeddings(
 
 def main():
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
-    if torch.cuda.is_available():
-        torch.cuda.set_device(local_rank)
+    use_cuda = False
     if "RANK" in os.environ and dist.is_available() and not dist.is_initialized():
-        dist.init_process_group(backend="nccl", timeout=timedelta(minutes=60))
+        dist.init_process_group(backend="gloo", timeout=timedelta(minutes=60))
     
     rank = dist.get_rank() if dist.is_initialized() else 0
     world_size = dist.get_world_size() if dist.is_initialized() else 1
@@ -117,7 +124,10 @@ def main():
     print_master("=== Distributed Setup Initialized ===")
     print_master(f"Master Info -> ADDR: {os.environ.get('MASTER_ADDR')}, PORT: {os.environ.get('MASTER_PORT')}")
     print_master(f"Global World Size: {world_size}")
-    print_rank(f"Process Identity -> Rank: {rank}, Local Rank: {local_rank} on {torch.cuda.get_device_name()}")
+    if use_cuda:
+        print_rank(f"Process Identity -> Rank: {rank}, Local Rank: {local_rank} on {torch.cuda.get_device_name()}")
+    else:
+        print_rank(f"Process Identity -> Rank: {rank}, Local Rank: {local_rank} on CPU")
 
     parser = HfArgumentParser((ModelArguments, DataArguments, EvalArguments))
     model_args, data_args, eval_args = parser.parse_args_into_dataclasses()
@@ -134,8 +144,8 @@ def main():
             model_name_or_path=model_args.model_name_or_path,
             normalize=model_args.normalize,
             instruction=model_args.instruction,
-            attn_implementation='flash_attention_2',
-            torch_dtype=torch.bfloat16,
+            use_cpu=True,
+            torch_dtype=torch.float32,
         )
 
     # Step 2: All processes wait until rank 0 finishes downloading
@@ -150,12 +160,15 @@ def main():
             model_name_or_path=model_args.model_name_or_path,
             normalize=model_args.normalize,
             instruction=model_args.instruction,
-            attn_implementation='flash_attention_2',
-            torch_dtype=torch.bfloat16,
+            use_cpu=True,
+            torch_dtype=torch.float32,
         )
     
     model.eval()
-    model = model.to(eval_args.device, dtype=torch.bfloat16)
+    if use_cuda:
+        model = model.to(eval_args.device, dtype=torch.bfloat16)
+    else:
+        model = model.to("cpu")
     with open(data_args.dataset_config, 'r') as yaml_file:
         dataset_configs = yaml.safe_load(yaml_file)
 
@@ -299,7 +312,7 @@ def main():
                 # Explicitly specify UTF-8 encoding to handle non-ASCII characters in dataset metadata
                 gt_infos = [json.loads(l) for l in open(dataset_info_path, encoding='utf-8')]
                 
-                device = model.device
+                device = torch.device("cpu")
                 pred_dicts = []
                 
                 # Convert to tensors and compute on GPU for acceleration
@@ -320,7 +333,8 @@ def main():
                         ranked_indices = ranked_indices.cpu().numpy()
                     
                     del cand_tensor
-                    torch.cuda.empty_cache()
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
 
                     for qid, (ranked_idx, gt_info) in tqdm(
                         enumerate(zip(ranked_indices, gt_infos)), 
@@ -361,7 +375,8 @@ def main():
                             "rel_scores": rel_scores,
                         })
                     
-                    torch.cuda.empty_cache()
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
 
                 # Compute metrics
                 metrics_to_report = task_config.get("metrics", ["hit", "ndcg", "precision", "recall", "f1", "map", "mrr"])

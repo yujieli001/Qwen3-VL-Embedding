@@ -9,7 +9,8 @@ Group=li
 WorkingDirectory=/data/Qwen3-VL-Embedding
 Environment="PATH=/data/Qwen3-VL-Embedding/.venv/bin"
 Environment="CUDA_VISIBLE_DEVICES="
-ExecStart=/data/Qwen3-VL-Embedding/.venv/bin/python -m uvicorn servers.openai_proxy:app --host 0.0.0.0 --port 10013
+EnvironmentFile=/data/Qwen3-VL-Embedding/embedding_reranker.env
+ExecStart=/data/Qwen3-VL-Embedding/.venv/bin/python -m uvicorn servers.openai_proxy:app --host 0.0.0.0 --port 10013 --workers ${UVICORN_WORKERS}
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -17,8 +18,8 @@ StandardError=journal
 SyslogIdentifier=qwen3-vl-api
 
 # Memory and CPU limits
-MemoryMax=32G
-CPUQuota=400%
+MemoryMax=64G
+CPUQuota=800%
 
 [Install]
 WantedBy=multi-user.target

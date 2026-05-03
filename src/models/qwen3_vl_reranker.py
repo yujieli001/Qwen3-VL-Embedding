@@ -23,6 +23,7 @@ FPS = 1
 MAX_FRAMES = 64
 FRAME_MAX_PIXELS = 768 * IMAGE_FACTOR * IMAGE_FACTOR
 MAX_TOTAL_PIXELS = 10 * FRAME_MAX_PIXELS  # 7680 tokens
+DEFAULT_BATCH_SIZE = 1
 
 
 def is_image_path(path: str) -> bool:
@@ -83,7 +84,7 @@ class Qwen3VLReranker():
         fps: float = FPS,
         max_frames: int = MAX_FRAMES,
         default_instruction: str = "Given a search query, retrieve relevant candidates that answer the query.",
-        use_cpu: bool = False,
+        use_cpu: bool = True,
         **kwargs,
     ):
         if use_cpu or "CUDA_VISIBLE_DEVICES" in os.environ and os.environ["CUDA_VISIBLE_DEVICES"] == "":
@@ -140,33 +141,6 @@ class Qwen3VLReranker():
         scores = torch.sigmoid(scores).squeeze(-1).cpu().detach().tolist()
         return scores
 
-    def truncate_tokens_optimized(
-        self,
-        tokens: List[str],
-        max_length: int,
-        special_tokens: List[str]
-    ) -> List[str]:
-        if len(tokens) <= max_length:
-            return tokens
-
-        special_tokens_set = set(special_tokens)
-
-        # Calculate budget: how many non-special tokens we can keep
-        num_special = sum(1 for token in tokens if token in special_tokens_set)
-        num_non_special_to_keep = max_length - num_special
-
-        # Build final list according to budget
-        final_tokens = []
-        non_special_kept_count = 0
-        for token in tokens:
-            if token in special_tokens_set:
-                final_tokens.append(token)
-            elif non_special_kept_count < num_non_special_to_keep:
-                final_tokens.append(token)
-                non_special_kept_count += 1
-
-        return final_tokens
-
     def tokenize(self, pairs: List[Dict], **kwargs) -> Dict:
         max_length = self.max_length
         text = self.processor.apply_chat_template(pairs, tokenize=False, add_generation_prompt=True)
@@ -179,15 +153,7 @@ class Qwen3VLReranker():
                 return_video_metadata=True
             )
         except Exception as e:
-            logger.error(f"Error in processing vision info: {e}")
-            images = None
-            videos = None
-            video_kwargs = {'do_sample_frames': False}
-            text = self.processor.apply_chat_template(
-                [{'role': 'user', 'content': [{'type': 'text', 'text': 'NULL'}]}],
-                add_generation_prompt=True,
-                tokenize=False
-            )
+            raise ValueError(f"Failed to process vision inputs: {e}") from e
         
         if videos is not None:
             videos, video_metadatas = zip(*videos)
@@ -205,14 +171,18 @@ class Qwen3VLReranker():
             do_resize=False,
             **video_kwargs
         )
-        
-        # Truncate input IDs while preserving special tokens
-        for i, ele in enumerate(inputs['input_ids']):
-            inputs['input_ids'][i] = self.truncate_tokens_optimized(
-                inputs['input_ids'][i][:-5],
-                max_length,
-                self.processor.tokenizer.all_special_ids
-            ) + inputs['input_ids'][i][-5:]
+
+        too_long = [
+            (idx, len(input_ids))
+            for idx, input_ids in enumerate(inputs['input_ids'])
+            if len(input_ids) > max_length
+        ]
+        if too_long:
+            details = ", ".join(f"pair {idx}: {length}" for idx, length in too_long[:5])
+            raise ValueError(
+                f"Reranker input length exceeds max_length={max_length} ({details}). "
+                "Reduce text length, image count, video frames, or max_pixels."
+            )
             
         # Apply padding
         temp_inputs = self.processor.tokenizer.pad(
@@ -385,6 +355,7 @@ class Qwen3VLReranker():
         inputs: Dict,
     ) -> List[float]:
         instruction = inputs.get('instruction', self.default_instruction)
+        batch_size = inputs.get('batch_size')
 
         query = inputs.get("query", {})
         documents = inputs.get("documents", [])
@@ -408,11 +379,17 @@ class Qwen3VLReranker():
             for document in documents
         ]
 
-        # Compute scores for each pair
+        # Compute scores for each pair. Batch by default so callers that already
+        # chunk documents get a single forward pass per chunk.
         final_scores = []
-        for pair in pairs:
-            tokenized_inputs = self.tokenize([pair])
-            tokenized_inputs = tokenized_inputs.to(self.model.device)
+        batch_size = int(batch_size or DEFAULT_BATCH_SIZE)
+        if batch_size <= 0:
+            raise ValueError("batch_size must be greater than 0")
+
+        for start in range(0, len(pairs), batch_size):
+            batch_pairs = pairs[start:start + batch_size]
+            tokenized_inputs = self.tokenize(batch_pairs)
+            tokenized_inputs = tokenized_inputs.to(self.device)
             scores = self.compute_scores(tokenized_inputs)
             final_scores.extend(scores)
             

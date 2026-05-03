@@ -4,21 +4,21 @@
 
 | Service | Port | Description |
 |---------|------|-------------|
-| Combined API | 10011/10012 | Raw Embedding (10011) + Reranker (10012) |
+| Raw APIs | 10011/10012 | Embedding (10011) + Reranker (10012), loaded in separate processes |
 | OpenAI Proxy | 10013 | OpenAI-compatible API (for Dify) |
 
 ## Quick Start
 
 ### Start All Services
 ```bash
-# Start combined service (ports 10011, 10012)
+# Start separate embedding and reranker services (ports 10011, 10012)
 .venv/bin/python servers/start_combined.py
 
 # OR start OpenAI-compatible proxy (port 10013) - Recommended for Dify
 .venv/bin/python servers/openai_proxy.py
 ```
 
-A unified API server that provides both Embedding and Reranker functionality.
+The raw services run as two separate processes so each port loads only its own model.
 
 ## Services
 
@@ -53,7 +53,7 @@ sudo systemctl daemon-reload
 
 ### 3. Enable and start service
 ```bash
-# Start the combined service (both ports)
+# Start the API service
 sudo systemctl start embedding_reranker.service
 sudo systemctl enable embedding_reranker.service
 ```
@@ -76,11 +76,6 @@ sudo journalctl -u embedding_reranker.service -f
 ```bash
 curl http://localhost:10011/health
 curl http://localhost:10012/health
-```
-
-**Service Info**
-```bash
-curl http://localhost:10011/info
 ```
 
 ### Embedding Endpoints (Port 10011)
@@ -127,21 +122,6 @@ curl -X POST "http://localhost:10012/rerank" \
     ],
     "fps": 1.0, 
     "max_frames": 64
-  }'
-```
-
-### Combined Endpoints (Both ports)
-
-**Process Embedding and Rerank**
-```bash
-curl -X POST "http://localhost:10011/process?use_reranker=true" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": {"text": "Beach sunset"},
-    "documents": [
-      {"text": "A beautiful sunset on the beach"},
-      {"text": "Rainy day in the city"}
-    ]
   }'
 ```
 

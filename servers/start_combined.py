@@ -16,17 +16,19 @@ def main():
 
     print(f"Working directory: {project_root}")
 
-    # Start both servers
+    env = {**os.environ, "PYTHONPATH": project_root, "CUDA_VISIBLE_DEVICES": ""}
+
+    # Start independent services so each port loads only the model it serves.
     port_10011 = subprocess.Popen(
-        [sys.executable, "-m", "uvicorn", "servers.combined_app:app", "--host", "0.0.0.0", "--port", "10011"],
-        env={**os.environ, "PYTHONPATH": project_root}
+        [sys.executable, "-m", "uvicorn", "servers.embedding_server:app", "--host", "0.0.0.0", "--port", "10011"],
+        env=env
     )
 
     time.sleep(2)  # Give first server time to start
 
     port_10012 = subprocess.Popen(
-        [sys.executable, "-m", "uvicorn", "servers.combined_app:app", "--host", "0.0.0.0", "--port", "10012"],
-        env={**os.environ, "PYTHONPATH": project_root}
+        [sys.executable, "-m", "uvicorn", "servers.reranker_server:app", "--host", "0.0.0.0", "--port", "10012"],
+        env=env
     )
 
     print("Services started:")
@@ -35,7 +37,14 @@ def main():
 
     # Wait for both
     try:
-        port_10011.wait()
+        while True:
+            code_10011 = port_10011.poll()
+            code_10012 = port_10012.poll()
+            if code_10011 is not None or code_10012 is not None:
+                port_10011.terminate()
+                port_10012.terminate()
+                sys.exit(code_10011 if code_10011 is not None else code_10012)
+            time.sleep(1)
     except KeyboardInterrupt:
         print("Shutting down...")
         port_10011.terminate()

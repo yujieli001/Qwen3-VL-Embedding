@@ -1,4 +1,6 @@
 import os
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
 import time
 import json
 import yaml
@@ -87,8 +89,9 @@ def rerank_topk_for_queries(
         query_dataset, desc=f"Reranking (rank {rank})",
         disable=local_rank > 0, ncols=120,
     )):
-        q_sample = query_item["query_input"]
-        instruction = q_sample.pop("instruction", None)
+        q_sample = dict(query_item["query_input"])
+        instruction = q_sample.get("instruction", None)
+        q_sample.pop("instruction", None)
         
         gt_dids = query_item["dataset_infos"]["label_name"]
         gt_dids = gt_dids if isinstance(gt_dids, list) else [gt_dids]
@@ -127,12 +130,16 @@ def rerank_topk_for_queries(
         
         # score docs with batching
         rerank_scores = []
+        batch_size = int(batch_size)
+        if batch_size <= 0:
+            raise ValueError("per_device_eval_batch_size must be greater than 0")
         for s in range(0, len(docs), batch_size):
             batch_docs = docs[s:s + batch_size]
             inputs = {
                 "instruction": instruction,
                 "query": q_sample,
                 "documents": batch_docs,
+                "batch_size": batch_size,
             }
             batch_scores = reranker.process(inputs)  # list[float]
             rerank_scores.extend(batch_scores)
@@ -164,11 +171,10 @@ def rerank_topk_for_queries(
 
 def main():
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
-    if torch.cuda.is_available():
-        torch.cuda.set_device(local_rank)
+    use_cuda = False
 
     if "RANK" in os.environ and dist.is_available() and not dist.is_initialized():
-        dist.init_process_group(backend="nccl", timeout=timedelta(minutes=60))
+        dist.init_process_group(backend="gloo", timeout=timedelta(minutes=60))
 
     rank = dist.get_rank() if dist.is_initialized() else 0
     world_size = dist.get_world_size() if dist.is_initialized() else 1
@@ -176,7 +182,7 @@ def main():
     print_master("=== Distributed Setup Initialized (Reranker Eval) ===")
     print_master(f"Master -> ADDR: {os.environ.get('MASTER_ADDR')}, PORT: {os.environ.get('MASTER_PORT')}")
     print_master(f"World Size: {world_size}")
-    if torch.cuda.is_available():
+    if use_cuda:
         print_rank(f"Rank: {rank}, Local Rank: {local_rank} on {torch.cuda.get_device_name()}")
     
     parser = HfArgumentParser((RerankArguments, DataArguments, EvalArguments))
@@ -192,8 +198,8 @@ def main():
         reranker = Qwen3VLReranker(
             model_args.model_name_or_path,
             default_instruction=model_args.instruction,
-            attn_implementation='flash_attention_2',
-            torch_dtype=torch.bfloat16,
+            use_cpu=True,
+            torch_dtype=torch.float32,
         )
 
     if dist.is_initialized():
@@ -205,7 +211,8 @@ def main():
         reranker = Qwen3VLReranker(
             model_args.model_name_or_path,
             default_instruction=model_args.instruction,
-            torch_dtype=torch.bfloat16,
+            use_cpu=True,
+            torch_dtype=torch.float32,
         )
 
     with open(data_args.dataset_config, 'r') as yaml_file:

@@ -168,7 +168,7 @@ class Qwen3VLEmbedder():
         fps: float = FPS,
         max_frames: int = MAX_FRAMES,
         default_instruction: str = "Represent the user's input.",
-        use_cpu: bool = False,
+        use_cpu: bool = True,
         **kwargs
     ):
         if use_cpu or "CUDA_VISIBLE_DEVICES" in os.environ and os.environ["CUDA_VISIBLE_DEVICES"] == "":
@@ -341,14 +341,7 @@ class Qwen3VLEmbedder():
                 return_video_metadata=True, return_video_kwargs=True
             )
         except Exception as e:
-            logger.error(f"Error in processing vision info: {e}")
-            images = None
-            video_inputs = None
-            video_kwargs = {'do_sample_frames': False}
-            text = self.processor.apply_chat_template(
-                [{'role': 'user', 'content': [{'type': 'text', 'text': 'NULL'}]}], 
-                add_generation_prompt=True, tokenize=False
-            )
+            raise ValueError(f"Failed to process vision inputs: {e}") from e
 
         if video_inputs is not None:
             videos, video_metadata = zip(*video_inputs)

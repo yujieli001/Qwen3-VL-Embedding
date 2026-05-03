@@ -7,6 +7,12 @@ Port: 10013
 """
 
 import os
+
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
+import base64
+import binascii
+import io
 import sys
 import logging
 from typing import List, Optional, Dict, Union, Any
@@ -17,7 +23,8 @@ import torch
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from PIL import Image
+from pydantic import BaseModel, Field
 
 # Add project root to path
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -66,7 +73,8 @@ def get_reranker_model() -> Qwen3VLReranker:
 # ============== Pydantic Models (OpenAI-compatible) ==============
 
 class EmbeddingRequest(BaseModel):
-    input: Union[str, List[str], List[int], List[List[int]]]
+    input: Optional[Any] = None
+    messages: Optional[List[Dict[str, Any]]] = None
     model: str = "qwen3-vl-embedding-2b"
     user: Optional[str] = None
 
@@ -77,6 +85,124 @@ class EmbeddingRequest(BaseModel):
                 "model": "qwen3-vl-embedding-2b"
             }
         }
+
+
+def _image_from_data_url(url: str) -> Image.Image:
+    if "," not in url:
+        raise HTTPException(status_code=400, detail="Invalid data URL image.")
+
+    header, encoded = url.split(",", 1)
+    if not header.lower().startswith("data:image/"):
+        raise HTTPException(status_code=400, detail="Only data:image URLs are supported for inline images.")
+
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+        return Image.open(io.BytesIO(raw)).convert("RGB")
+    except (binascii.Error, OSError) as e:
+        raise HTTPException(status_code=400, detail=f"Invalid base64 image data: {e}") from e
+
+
+def _normalize_image_url(url: str) -> Union[str, Image.Image]:
+    if url.startswith("data:image/"):
+        return _image_from_data_url(url)
+    if url.startswith(("http://", "https://")):
+        return url
+    raise HTTPException(status_code=400, detail="image_url.url must be an http(s) URL or data:image base64 URL.")
+
+
+def _messages_to_embedding_input(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
+    instruction_parts: List[str] = []
+    text_parts: List[str] = []
+    images: List[Union[str, Image.Image]] = []
+
+    for message in messages:
+        role = message.get("role")
+        content = message.get("content", [])
+        if isinstance(content, str):
+            content_items = [{"type": "text", "text": content}]
+        elif isinstance(content, list):
+            content_items = content
+        else:
+            raise HTTPException(status_code=400, detail="messages[].content must be a string or a list.")
+
+        for item in content_items:
+            item_type = item.get("type")
+            if item_type == "text":
+                text = item.get("text", "")
+                if role == "system":
+                    instruction_parts.append(text)
+                else:
+                    text_parts.append(text)
+            elif item_type == "image_url":
+                image_url = item.get("image_url", {})
+                if isinstance(image_url, dict):
+                    url = image_url.get("url")
+                else:
+                    url = image_url
+                if not isinstance(url, str):
+                    raise HTTPException(status_code=400, detail="image_url.url is required.")
+                images.append(_normalize_image_url(url))
+            elif item_type == "image":
+                image = item.get("image")
+                if isinstance(image, str):
+                    images.append(_normalize_image_url(image))
+                else:
+                    raise HTTPException(status_code=400, detail="image content must be a URL string.")
+            else:
+                raise HTTPException(status_code=400, detail=f"Unsupported message content type: {item_type}")
+
+    model_input: Dict[str, Any] = {}
+    if instruction_parts:
+        model_input["instruction"] = "\n".join(part for part in instruction_parts if part)
+    if text_parts:
+        model_input["text"] = "\n".join(part for part in text_parts if part)
+    if images:
+        model_input["image"] = images if len(images) > 1 else images[0]
+
+    if not model_input:
+        raise HTTPException(status_code=400, detail="messages must contain text or image content.")
+    return model_input
+
+
+def _embedding_inputs_from_request(request: EmbeddingRequest) -> List[Dict[str, Any]]:
+    if request.messages is not None:
+        return [_messages_to_embedding_input(request.messages)]
+
+    if request.input is None:
+        raise HTTPException(status_code=400, detail="Either input or messages is required.")
+
+    if isinstance(request.input, str):
+        return [{"text": request.input}]
+    if isinstance(request.input, list):
+        if all(isinstance(x, str) for x in request.input):
+            return [{"text": t} for t in request.input]
+        if all(isinstance(x, int) for x in request.input):
+            raise HTTPException(status_code=400, detail="Token ID inputs are not supported by this embedding proxy.")
+        if all(isinstance(x, list) and all(isinstance(i, int) for i in x) for x in request.input):
+            raise HTTPException(status_code=400, detail="Token ID inputs are not supported by this embedding proxy.")
+        if all(isinstance(x, dict) for x in request.input):
+            return request.input
+        return [{"text": str(x)} for x in request.input]
+    if isinstance(request.input, dict):
+        return [request.input]
+    return [{"text": str(request.input)}]
+
+
+def _count_request_tokens(request: EmbeddingRequest) -> int:
+    def count_tokens(inp):
+        if isinstance(inp, str):
+            return len(inp.split())
+        if isinstance(inp, list):
+            if all(isinstance(x, int) for x in inp):
+                return len(inp)
+            return sum(count_tokens(x) for x in inp)
+        if isinstance(inp, dict):
+            return sum(count_tokens(v) for v in inp.values())
+        return 1
+
+    if request.messages is not None:
+        return count_tokens(request.messages)
+    return count_tokens(request.input)
 
 
 class EmbeddingResponseData(BaseModel):
@@ -96,17 +222,20 @@ class RerankerRequest(BaseModel):
     query: str
     documents: List[str]
     model: str = "qwen3-vl-reranker-2b"
+    batch_size: int = Field(default=1, gt=0)
 
 
 class RerankerResult(BaseModel):
     index: int
     document: str
     score: float
+    relevance_score: float
 
 
 class RerankerResponse(BaseModel):
     results: List[RerankerResult]
     model: str
+    scores: List[float]
 
 
 # ============== FastAPI App ==============
@@ -137,23 +266,7 @@ async def health():
 async def create_embeddings(request: EmbeddingRequest):
     """OpenAI-compatible embeddings endpoint"""
     try:
-        # Convert to format expected by embedder
-        # Handle different input types: str, List[str], List[int], List[List[int]]
-        if isinstance(request.input, str):
-            inputs = [{"text": request.input}]
-        elif isinstance(request.input, list):
-            if all(isinstance(x, str) for x in request.input):
-                inputs = [{"text": t} for t in request.input]
-            elif all(isinstance(x, int) for x in request.input):
-                # Token IDs - convert to text placeholder
-                inputs = [{"text": "token_input"}]
-            elif all(isinstance(x, list) and all(isinstance(i, int) for i in x) for x in request.input):
-                # List of token ID lists
-                inputs = [{"text": "token_input"} for _ in request.input]
-            else:
-                inputs = [{"text": str(x)} for x in request.input]
-        else:
-            inputs = [{"text": str(request.input)}]
+        inputs = _embedding_inputs_from_request(request)
 
         # Generate embeddings
         model = get_embedding_model()
@@ -168,17 +281,7 @@ async def create_embeddings(request: EmbeddingRequest):
                 embedding=emb.tolist()
             ))
 
-        # Calculate token usage (approximate)
-        def count_tokens(inp):
-            if isinstance(inp, str):
-                return len(inp.split())
-            elif isinstance(inp, list):
-                if all(isinstance(x, int) for x in inp):
-                    return len(inp)
-                return sum(count_tokens(x) for x in inp)
-            return 1
-
-        token_count = count_tokens(request.input)
+        token_count = _count_request_tokens(request)
 
         return EmbeddingResponse(
             data=data,
@@ -188,6 +291,8 @@ async def create_embeddings(request: EmbeddingRequest):
                 "total_tokens": token_count
             }
         )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error generating embeddings: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -199,7 +304,8 @@ async def rerank(request: RerankerRequest):
     try:
         inputs = {
             "query": {"text": request.query},
-            "documents": [{"text": doc} for doc in request.documents]
+            "documents": [{"text": doc} for doc in request.documents],
+            "batch_size": request.batch_size,
         }
         model = get_reranker_model()
         scores = model.process(inputs)
@@ -208,12 +314,17 @@ async def rerank(request: RerankerRequest):
             RerankerResult(
                 index=i,
                 document=doc,
-                score=scores[i]
+                score=float(scores[i]),
+                relevance_score=float(scores[i]),
             )
             for i, doc in enumerate(request.documents)
         ]
+        results.sort(key=lambda result: result.score, reverse=True)
+        sorted_scores = [result.score for result in results]
 
-        return RerankerResponse(results=results, model=request.model)
+        return RerankerResponse(results=results, model=request.model, scores=sorted_scores)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error reranking: {e}")
         raise HTTPException(status_code=500, detail=str(e))

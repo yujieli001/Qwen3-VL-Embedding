@@ -4,6 +4,10 @@ Embedding API Server for Qwen3-VL-Embedding
 Port: 10011
 """
 
+import os
+
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
 import torch
 import logging
 from typing import List, Dict, Any, Optional
@@ -45,6 +49,7 @@ def load_model():
 
     model = Qwen3VLEmbedder(
         model_name_or_path=model_path,
+        use_cpu=True,
         torch_dtype=torch.float32,  # Use float32 for CPU
     )
 

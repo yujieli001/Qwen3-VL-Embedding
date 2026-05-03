@@ -4,11 +4,15 @@ Reranker API Server for Qwen3-VL-Reranker
 Port: 10012
 """
 
+import os
+
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
 import torch
 import logging
 from typing import List, Dict, Any, Optional
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import uvicorn
 
 from src.models.qwen3_vl_reranker import Qwen3VLReranker
@@ -30,6 +34,7 @@ class RerankerInput(BaseModel):
     query: Dict[str, Any]
     documents: List[Dict[str, Any]]
     instruction: Optional[str] = None
+    batch_size: int = Field(default=1, gt=0)
 
 
 class RerankerResponse(BaseModel):
@@ -45,6 +50,7 @@ def load_model():
 
     model = Qwen3VLReranker(
         model_name_or_path=model_path,
+        use_cpu=True,
         torch_dtype=torch.float32,  # Use float32 for CPU
     )
 
@@ -83,7 +89,8 @@ async def rerank(input_data: RerankerInput) -> RerankerResponse:
         inputs = {
             "query": input_data.query,
             "documents": input_data.documents,
-            "instruction": input_data.instruction
+            "instruction": input_data.instruction,
+            "batch_size": input_data.batch_size,
         }
 
         scores = model.process(inputs)
