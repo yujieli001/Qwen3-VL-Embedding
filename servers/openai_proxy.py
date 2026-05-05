@@ -26,7 +26,10 @@ EMBEDDING_CUDA_DEVICE = _env_config.get("EMBEDDING_CUDA_DEVICE", "0")
 USE_RERANKER_GPU = _env_config.get("USE_RERANKER_GPU", "true").lower() in ("true", "1", "yes")
 RERANKER_CUDA_DEVICE = _env_config.get("RERANKER_CUDA_DEVICE", "1")
 
-print(f"[GPU Config] USE_EMBEDDING_GPU={USE_EMBEDDING_GPU}, EMBEDDING_CUDA_DEVICE={EMBEDDING_CUDA_DEVICE}, USE_RERANKER_GPU={USE_RERANKER_GPU}, RERANKER_CUDA_DEVICE={RERANKER_CUDA_DEVICE}")
+# 从配置读取模型精度字符串（稍后在 torch 导入后转换）
+MODEL_DTYPE_STR = _env_config.get("MODEL_DTYPE", "bfloat16")
+
+print(f"[GPU Config] USE_EMBEDDING_GPU={USE_EMBEDDING_GPU}, EMBEDDING_CUDA_DEVICE={EMBEDDING_CUDA_DEVICE}, USE_RERANKER_GPU={USE_RERANKER_GPU}, RERANKER_CUDA_DEVICE={RERANKER_CUDA_DEVICE}, MODEL_DTYPE={MODEL_DTYPE_STR}")
 
 import base64
 import binascii
@@ -34,6 +37,12 @@ import io
 import logging
 import torch
 from typing import List, Optional, Dict, Union, Any
+
+# 在 torch 导入后设置 MODEL_DTYPE
+if MODEL_DTYPE_STR == "float32":
+    MODEL_DTYPE = torch.float32
+else:
+    MODEL_DTYPE = torch.bfloat16
 from typing_extensions import Annotated
 from functools import lru_cache
 
@@ -53,15 +62,14 @@ from src.models.qwen3_vl_reranker import Qwen3VLReranker
 # 从环境变量读取配置
 EMBEDDING_MODEL_PATH = os.environ.get("EMBEDDING_MODEL_PATH", "/model/Qwen3-VL-Embedding-2B")
 RERANKER_MODEL_PATH = os.environ.get("RERANKER_MODEL_PATH", "/model/Qwen3-VL-Reranker-2B")
-MODEL_DTYPE = torch.bfloat16
 
 
 def get_device_info(model_type: str):
     """获取设备信息字符串"""
-    if not USE_GPU:
+    use_gpu_map = {"embedding": USE_EMBEDDING_GPU, "reranker": USE_RERANKER_GPU}
+    if not use_gpu_map.get(model_type, False):
         return "cpu"
-    device_map = {"embedding": EMBEDDING_CUDA_DEVICE, "reranker": RERANKER_CUDA_DEVICE}
-    cuda_dev = device_map.get(model_type, "0")
+    cuda_dev = {"embedding": EMBEDDING_CUDA_DEVICE, "reranker": RERANKER_CUDA_DEVICE}.get(model_type, "0")
     return f"cuda:{cuda_dev}"
 
 logging.basicConfig(
