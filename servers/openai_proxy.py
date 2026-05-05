@@ -7,19 +7,36 @@ Port: 10013
 """
 
 import os
+import sys
 
-os.environ["CUDA_VISIBLE_DEVICES"] = ""
+# 在导入 torch 之前读取.env 文件配置
+env_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "embedding_reranker.env")
+_env_config = {}
+if os.path.exists(env_file):
+    with open(env_file, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith('#') and '=' in line:
+                key, value = line.split('=', 1)
+                _env_config[key.strip()] = value.strip()
+
+# 从配置读取 GPU 设置（各模型独立控制）
+USE_EMBEDDING_GPU = _env_config.get("USE_EMBEDDING_GPU", "true").lower() in ("true", "1", "yes")
+EMBEDDING_CUDA_DEVICE = _env_config.get("EMBEDDING_CUDA_DEVICE", "0")
+USE_RERANKER_GPU = _env_config.get("USE_RERANKER_GPU", "true").lower() in ("true", "1", "yes")
+RERANKER_CUDA_DEVICE = _env_config.get("RERANKER_CUDA_DEVICE", "1")
+
+print(f"[GPU Config] USE_EMBEDDING_GPU={USE_EMBEDDING_GPU}, EMBEDDING_CUDA_DEVICE={EMBEDDING_CUDA_DEVICE}, USE_RERANKER_GPU={USE_RERANKER_GPU}, RERANKER_CUDA_DEVICE={RERANKER_CUDA_DEVICE}")
 
 import base64
 import binascii
 import io
-import sys
 import logging
+import torch
 from typing import List, Optional, Dict, Union, Any
 from typing_extensions import Annotated
 from functools import lru_cache
 
-import torch
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -33,6 +50,20 @@ sys.path.insert(0, project_root)
 from src.models.qwen3_vl_embedding import Qwen3VLEmbedder
 from src.models.qwen3_vl_reranker import Qwen3VLReranker
 
+# 从环境变量读取配置
+EMBEDDING_MODEL_PATH = os.environ.get("EMBEDDING_MODEL_PATH", "/model/Qwen3-VL-Embedding-2B")
+RERANKER_MODEL_PATH = os.environ.get("RERANKER_MODEL_PATH", "/model/Qwen3-VL-Reranker-2B")
+MODEL_DTYPE = torch.bfloat16
+
+
+def get_device_info(model_type: str):
+    """获取设备信息字符串"""
+    if not USE_GPU:
+        return "cpu"
+    device_map = {"embedding": EMBEDDING_CUDA_DEVICE, "reranker": RERANKER_CUDA_DEVICE}
+    cuda_dev = device_map.get(model_type, "0")
+    return f"cuda:{cuda_dev}"
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -44,29 +75,34 @@ _models_cache: Dict[str, object] = {}
 
 
 def get_embedding_model() -> Qwen3VLEmbedder:
-    """Lazy load embedding model"""
+    """Lazy load embedding model on designated GPU or CPU"""
     if "embedding" not in _models_cache:
-        logger.info("Loading Embedding model on CPU...")
-        os.environ["CUDA_VISIBLE_DEVICES"] = ""
+        use_cpu = not USE_EMBEDDING_GPU
+        device_info = "cpu" if use_cpu else f"cuda:{EMBEDDING_CUDA_DEVICE}"
+        logger.info(f"Loading Embedding model on {device_info}...")
         _models_cache["embedding"] = Qwen3VLEmbedder(
-            model_name_or_path="/model/Qwen3-VL-Embedding-2B",
-            use_cpu=True,
-            torch_dtype=torch.float32,
+            model_name_or_path=EMBEDDING_MODEL_PATH,
+            use_cpu=use_cpu,
+            device_id=int(EMBEDDING_CUDA_DEVICE) if not use_cpu else None,
+            dtype=MODEL_DTYPE,
         )
-        logger.info("Embedding model loaded successfully.")
+        logger.info(f"Embedding model loaded successfully on {device_info}.")
     return _models_cache["embedding"]
 
 
 def get_reranker_model() -> Qwen3VLReranker:
-    """Lazy load reranker model"""
+    """Lazy load reranker model on designated GPU or CPU"""
     if "reranker" not in _models_cache:
-        logger.info("Loading Reranker model on CPU...")
+        use_cpu = not USE_RERANKER_GPU
+        device_info = "cpu" if use_cpu else f"cuda:{RERANKER_CUDA_DEVICE}"
+        logger.info(f"Loading Reranker model on {device_info}...")
         _models_cache["reranker"] = Qwen3VLReranker(
-            model_name_or_path="/model/Qwen3-VL-Reranker-2B",
-            use_cpu=True,
-            torch_dtype=torch.float32,
+            model_name_or_path=RERANKER_MODEL_PATH,
+            use_cpu=use_cpu,
+            device_id=int(RERANKER_CUDA_DEVICE) if not use_cpu else None,
+            torch_dtype=MODEL_DTYPE,
         )
-        logger.info("Reranker model loaded successfully.")
+        logger.info(f"Reranker model loaded successfully on {device_info}.")
     return _models_cache["reranker"]
 
 

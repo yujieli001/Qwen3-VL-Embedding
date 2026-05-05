@@ -9,14 +9,36 @@ import sys
 import os
 import time
 
+# 加载.env 文件
+def load_env_file(env_path):
+    """Load environment variables from .env file"""
+    if os.path.exists(env_path):
+        with open(env_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    key, value = line.split('=', 1)
+                    os.environ[key.strip()] = value.strip()
+
 def main():
     # Change to project root
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     os.chdir(project_root)
 
+    # 加载.env 配置文件
+    env_file = os.path.join(project_root, "embedding_reranker.env")
+    load_env_file(env_file)
+    print(f"Loaded environment from: {env_file}")
+
     print(f"Working directory: {project_root}")
 
-    env = {**os.environ, "PYTHONPATH": project_root, "CUDA_VISIBLE_DEVICES": ""}
+    # 从环境变量读取配置
+    use_gpu = os.environ.get("USE_GPU", "true").lower() in ("true", "1", "yes")
+    gpu_config = os.environ.get("CUDA_VISIBLE_DEVICES", "0")
+    env = {**os.environ, "PYTHONPATH": project_root, "USE_GPU": str(use_gpu).lower(), "CUDA_VISIBLE_DEVICES": gpu_config if use_gpu else ""}
+
+    device_type = "GPU" if use_gpu else "CPU"
+    print(f"Device configuration: {device_type} (CUDA_VISIBLE_DEVICES={gpu_config if use_gpu else 'none'})")
 
     # Start independent services so each port loads only the model it serves.
     port_10011 = subprocess.Popen(

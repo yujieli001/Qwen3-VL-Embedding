@@ -168,13 +168,26 @@ class Qwen3VLEmbedder():
         fps: float = FPS,
         max_frames: int = MAX_FRAMES,
         default_instruction: str = "Represent the user's input.",
-        use_cpu: bool = True,
+        use_cpu: bool = None,
+        device_id: int = None,
         **kwargs
     ):
-        if use_cpu or "CUDA_VISIBLE_DEVICES" in os.environ and os.environ["CUDA_VISIBLE_DEVICES"] == "":
-            device = torch.device("cpu")
+        # Use environment config if use_cpu not explicitly specified
+        if use_cpu is None:
+            use_gpu = os.environ.get("USE_GPU", "true").lower() in ("true", "1", "yes")
+            use_cpu = not use_gpu
+
+        # Set CUDA_VISIBLE_DEVICES before determining device
+        if use_cpu:
+            os.environ["CUDA_VISIBLE_DEVICES"] = ""
+        elif device_id is not None:
+            os.environ["CUDA_VISIBLE_DEVICES"] = str(device_id)
+
+        # Determine device - always use cuda:0 since CUDA_VISIBLE_DEVICES is set
+        if os.environ.get("CUDA_VISIBLE_DEVICES", "") == "":
+            self.device = torch.device("cpu")
         else:
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            self.device = torch.device("cuda:0")
 
         self.max_length = max_length
         self.min_pixels = min_pixels
@@ -187,7 +200,7 @@ class Qwen3VLEmbedder():
 
         self.model = Qwen3VLForEmbedding.from_pretrained(
             model_name_or_path, trust_remote_code=True, **kwargs
-        ).to(device)
+        ).to(self.device)
         self.processor = Qwen3VLProcessor.from_pretrained(
             model_name_or_path, padding_side='right'
         )

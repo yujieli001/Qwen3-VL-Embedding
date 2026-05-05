@@ -1,5 +1,5 @@
 [Unit]
-Description=Qwen3-VL OpenAI-compatible API Service
+Description=Qwen3-VL OpenAI-compatible API Service (Embedding on GPU 1, Reranker on GPU 0)
 After=network.target
 
 [Service]
@@ -8,9 +8,9 @@ User=li
 Group=li
 WorkingDirectory=/data/Qwen3-VL-Embedding
 Environment="PATH=/data/Qwen3-VL-Embedding/.venv/bin"
-Environment="CUDA_VISIBLE_DEVICES="
+Environment="PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True"
 EnvironmentFile=/data/Qwen3-VL-Embedding/embedding_reranker.env
-ExecStart=/data/Qwen3-VL-Embedding/.venv/bin/python -m uvicorn servers.openai_proxy:app --host 0.0.0.0 --port 10013 --workers ${UVICORN_WORKERS}
+ExecStart=/data/Qwen3-VL-Embedding/.venv/bin/python -m uvicorn servers.openai_proxy:app --host 0.0.0.0 --port 10013 --workers 2
 Restart=always
 RestartSec=10
 StandardOutput=journal

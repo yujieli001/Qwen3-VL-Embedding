@@ -12,11 +12,29 @@ To run on both ports, use the start script:
 """
 
 import os
+import sys
 
-os.environ["CUDA_VISIBLE_DEVICES"] = ""
+# 在导入 torch 之前设置 GPU 配置
+# 读取.env 文件中的配置
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+env_file = os.path.join(project_root, "embedding_reranker.env")
+if os.path.exists(env_file):
+    with open(env_file, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith('#') and '=' in line:
+                key, value = line.split('=', 1)
+                key, value = key.strip(), value.strip()
+                if key in ('USE_GPU', 'CUDA_VISIBLE_DEVICES'):
+                    os.environ.setdefault(key, value)
 
-import torch
+# 设置 CUDA_VISIBLE_DEVICES（在导入 torch 之前）
+USE_GPU = os.environ.get("USE_GPU", "true").lower() in ("true", "1", "yes")
+if not USE_GPU:
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
 import logging
+import torch
 from typing import List, Dict, Any, Optional
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
@@ -25,6 +43,19 @@ import uvicorn
 
 from src.models.qwen3_vl_embedding import Qwen3VLEmbedder
 from src.models.qwen3_vl_reranker import Qwen3VLReranker
+
+# 从环境变量读取配置
+EMBEDDING_MODEL_PATH = os.environ.get("EMBEDDING_MODEL_PATH", "/model/Qwen3-VL-Embedding-2B")
+RERANKER_MODEL_PATH = os.environ.get("RERANKER_MODEL_PATH", "/model/Qwen3-VL-Reranker-2B")
+MODEL_DTYPE = torch.bfloat16
+
+
+def get_device_info():
+    """获取设备信息字符串"""
+    if USE_GPU and torch.cuda.is_available():
+        cuda_dev = os.environ.get("CUDA_VISIBLE_DEVICES", "0")
+        return f"cuda:{cuda_dev}" if cuda_dev else "cuda"
+    return "cpu"
 
 # Configure logging
 logging.basicConfig(
@@ -67,31 +98,27 @@ class ModelInfo(BaseModel):
 
 
 def load_models():
-    """Load both models on CPU"""
+    """Load both models using environment config"""
     global embedding_model, reranker_model
 
-    embedding_path = "/model/Qwen3-VL-Embedding-2B"
-    reranker_path = "/model/Qwen3-VL-Reranker-2B"
+    device_info = get_device_info()
 
-    logger.info(f"Loading embedding model from {embedding_path} on CPU...")
-
-    # Force CPU
-    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+    logger.info(f"Loading embedding model from {EMBEDDING_MODEL_PATH} on {device_info}...")
 
     embedding_model = Qwen3VLEmbedder(
-        model_name_or_path=embedding_path,
-        use_cpu=True,
-        torch_dtype=torch.float32,
+        model_name_or_path=EMBEDDING_MODEL_PATH,
+        use_cpu=not USE_GPU,
+        torch_dtype=MODEL_DTYPE,
     )
-    logger.info("Embedding model loaded successfully")
+    logger.info(f"Embedding model loaded successfully on {device_info}")
 
-    logger.info(f"Loading reranker model from {reranker_path} on CPU...")
+    logger.info(f"Loading reranker model from {RERANKER_MODEL_PATH} on {device_info}...")
     reranker_model = Qwen3VLReranker(
-        model_name_or_path=reranker_path,
-        use_cpu=True,
-        torch_dtype=torch.float32,
+        model_name_or_path=RERANKER_MODEL_PATH,
+        use_cpu=not USE_GPU,
+        torch_dtype=MODEL_DTYPE,
     )
-    logger.info("Reranker model loaded successfully")
+    logger.info(f"Reranker model loaded successfully on {device_info}")
 
     return embedding_model, reranker_model
 
@@ -133,7 +160,7 @@ async def get_info():
     return ModelInfo(
         embedding_model="Qwen3-VL-Embedding-2B",
         reranker_model="Qwen3-VL-Reranker-2B",
-        device="cpu"
+        device=get_device_info()
     )
 
 
