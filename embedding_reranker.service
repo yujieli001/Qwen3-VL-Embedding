@@ -18,7 +18,7 @@ StandardError=journal
 SyslogIdentifier=qwen3-vl-api
 
 # Memory and CPU limits
-MemoryMax=64G
+MemoryMax=128G
 CPUQuota=800%
 
 [Install]
