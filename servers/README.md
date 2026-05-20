@@ -33,6 +33,7 @@ Model and device settings are read from `embedding_reranker.env`.
 | `EMBEDDING_MODEL_PATH` | `/model/Qwen3-VL-Embedding-2B` | Embedding model path |
 | `RERANKER_MODEL_PATH` | `/model/Qwen3-VL-Reranker-2B` | Reranker model path |
 | `USE_EMBEDDING_GPU` / `USE_RERANKER_GPU` | `true` | Enable GPU per model |
+| `UVICORN_WORKERS` | `1` | Must stay `1`; each worker loads both models |
 | `EMBEDDING_CUDA_DEVICE` / `RERANKER_CUDA_DEVICE` | `0` / `1` | Physical GPU IDs |
 
 ## Systemd Service Setup
@@ -124,7 +125,7 @@ POST /v1/rerank
 GET  /v1/models
 ```
 
-The `/v1/embeddings` response follows OpenAI embedding format. The `/v1/rerank` response follows a Cohere-style rerank shape with `results`, `scores`, and `relevance_score`.
+The `/v1/embeddings` response follows OpenAI embedding format and accepts `input` or multimodal `messages`. The `/v1/rerank` response follows a Cohere-style rerank shape with `results`, `scores`, and `relevance_score`; document objects are sanitized to model fields such as `text`, `image`, and `video`.
 
 ## Stop or Disable Service
 

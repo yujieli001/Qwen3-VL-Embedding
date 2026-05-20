@@ -4,9 +4,12 @@ Unified API server for Qwen3-VL Embedding and Reranker.
 Port: configured by API_PORT
 """
 
+import base64
+import binascii
+import io
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -39,6 +42,7 @@ os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(VISIBLE_CUDA_DEVICES)
 
 import torch
 from fastapi import FastAPI, HTTPException
+from PIL import Image
 from pydantic import BaseModel, Field
 
 from src.models.qwen3_vl_embedding import Qwen3VLEmbedder
@@ -84,7 +88,8 @@ class RerankerResponse(BaseModel):
 
 
 class OpenAIEmbeddingRequest(BaseModel):
-    input: Any
+    input: Optional[Any] = None
+    messages: Optional[List[Dict[str, Any]]] = None
     model: str = "qwen3-vl-embedding-2b"
     user: Optional[str] = None
 
@@ -122,23 +127,115 @@ class V1RerankerResponse(BaseModel):
     scores: List[float]
 
 
+def _image_from_data_url(url: str) -> Image.Image:
+    if "," not in url:
+        raise HTTPException(status_code=400, detail="Invalid data URL image.")
+    header, encoded = url.split(",", 1)
+    if not header.lower().startswith("data:image/"):
+        raise HTTPException(status_code=400, detail="Only data:image URLs are supported for inline images.")
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+        return Image.open(io.BytesIO(raw)).convert("RGB")
+    except (binascii.Error, OSError) as e:
+        raise HTTPException(status_code=400, detail=f"Invalid base64 image data: {e}") from e
+
+
+def _normalize_image_url(url: str) -> Union[str, Image.Image]:
+    if url.startswith("data:image/"):
+        return _image_from_data_url(url)
+    if url.startswith(("http://", "https://", "/")):
+        return url
+    raise HTTPException(status_code=400, detail="image URL must be http(s), absolute path, or data:image base64.")
+
+
+def _sanitize_mm_input(value: Any) -> Dict[str, Any]:
+    if not isinstance(value, dict):
+        return {"text": str(value)}
+
+    result: Dict[str, Any] = {}
+    text = value.get("text") or value.get("content") or value.get("page_content")
+    if text is not None:
+        result["text"] = str(text)
+
+    for key in ("image", "video", "instruction", "fps", "max_frames"):
+        if key in value:
+            result[key] = value[key]
+
+    image_url = value.get("image_url")
+    if image_url is not None and "image" not in result:
+        if isinstance(image_url, dict):
+            image_url = image_url.get("url")
+        if isinstance(image_url, str):
+            result["image"] = _normalize_image_url(image_url)
+
+    return result or {"text": str(value)}
+
+
+def _messages_to_embedding_input(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
+    instruction_parts: List[str] = []
+    text_parts: List[str] = []
+    images: List[Union[str, Image.Image]] = []
+
+    for message in messages:
+        role = message.get("role")
+        content = message.get("content", [])
+        if isinstance(content, str):
+            content_items = [{"type": "text", "text": content}]
+        elif isinstance(content, list):
+            content_items = content
+        else:
+            raise HTTPException(status_code=400, detail="messages[].content must be a string or list.")
+
+        for item in content_items:
+            item_type = item.get("type")
+            if item_type == "text":
+                text = item.get("text", "")
+                if role == "system":
+                    instruction_parts.append(text)
+                else:
+                    text_parts.append(text)
+            elif item_type in ("image", "image_url"):
+                image_value = item.get("image") if item_type == "image" else item.get("image_url", {})
+                if isinstance(image_value, dict):
+                    image_value = image_value.get("url")
+                if not isinstance(image_value, str):
+                    raise HTTPException(status_code=400, detail="image_url.url is required.")
+                images.append(_normalize_image_url(image_value))
+            else:
+                raise HTTPException(status_code=400, detail=f"Unsupported message content type: {item_type}")
+
+    model_input: Dict[str, Any] = {}
+    if instruction_parts:
+        model_input["instruction"] = "\n".join(part for part in instruction_parts if part)
+    if text_parts:
+        model_input["text"] = "\n".join(part for part in text_parts if part)
+    if images:
+        model_input["image"] = images if len(images) > 1 else images[0]
+    if not model_input:
+        raise HTTPException(status_code=400, detail="messages must contain text or image content.")
+    return model_input
+
+
 def _text_input(value: Any) -> Dict[str, Any]:
-    if isinstance(value, dict):
-        return value
-    return {"text": str(value)}
+    return _sanitize_mm_input(value)
 
 
 def _embedding_inputs_from_openai(request: OpenAIEmbeddingRequest) -> List[Dict[str, Any]]:
+    if request.messages is not None:
+        return [_messages_to_embedding_input(request.messages)]
+    if request.input is None:
+        raise HTTPException(status_code=400, detail="Either input or messages is required.")
+
     value = request.input
     if isinstance(value, str):
         return [{"text": value}]
     if isinstance(value, dict):
-        return [value]
+        return [_sanitize_mm_input(value)]
     if isinstance(value, list):
         if all(isinstance(item, str) for item in value):
             return [{"text": item} for item in value]
         if all(isinstance(item, dict) for item in value):
-            return value
+            return [_sanitize_mm_input(item) for item in value]
         if all(isinstance(item, int) for item in value):
             raise HTTPException(status_code=400, detail="Token ID inputs are not supported.")
         return [{"text": str(item)} for item in value]
@@ -176,7 +273,7 @@ def load_models():
         model_name_or_path=EMBEDDING_MODEL_PATH,
         use_cpu=not USE_EMBEDDING_GPU,
         device_id=_device_id(USE_EMBEDDING_GPU, EMBEDDING_CUDA_DEVICE),
-        torch_dtype=MODEL_DTYPE,
+        dtype=MODEL_DTYPE,
     )
     logger.info(f"Embedding model loaded successfully on {embedding_device}")
 
@@ -186,7 +283,7 @@ def load_models():
         model_name_or_path=RERANKER_MODEL_PATH,
         use_cpu=not USE_RERANKER_GPU,
         device_id=_device_id(USE_RERANKER_GPU, RERANKER_CUDA_DEVICE),
-        torch_dtype=MODEL_DTYPE,
+        dtype=MODEL_DTYPE,
     )
     logger.info(f"Reranker model loaded successfully on {reranker_device}")
 

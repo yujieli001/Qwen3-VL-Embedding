@@ -47,13 +47,37 @@ bash scripts/evaluation/mmeb_v2/eval_reranker.sh   # Reranker model
 - Embedding: `List[Dict]`，每个 Dict 包含 `text`/`image`/`video` 和可选的 `instruction`
 - Reranker: `Dict` 包含 `query` 和 `documents` (均为多模态对象)，以及可选的 `instruction`
 
+## API Endpoints
+
+所有端点在单一端口上（由 `API_PORT` 配置）：
+
+| Route | Method | Description |
+|-------|--------|-------------|
+| `/health` | GET | 健康检查（两个服务） |
+| `/embedding/health` | GET | Embedding 健康检查 |
+| `/reranker/health` | GET | Reranker 健康检查 |
+| `/embedding/embeddings` | POST | 生成 embeddings |
+| `/embedding/encode` | POST | 备用 encode 端点 |
+| `/reranker/rerank` | POST | 重排序 documents |
+| `/v1/embeddings` | POST | OpenAI 兼容 embedding |
+| `/v1/rerank` | POST | Cohere 风格 rerank |
+| `/v1/models` | GET | 列出可用模型 |
+
 ## GPU/CPU Configuration
 
-通过环境变量控制 GPU/CPU 使用:
-- `USE_EMBEDDING_GPU=true/false`: 控制 embedding 模型
-- `USE_RERANKER_GPU=true/false`: 控制 reranker 模型
+配置在 `embedding_reranker.env` 中定义:
 
-服务器代码在启动前设置 `CUDA_VISIBLE_DEVICES`，然后在模型加载时映射到 `cuda:0`。
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `API_PORT` | - | Unified API port |
+| `EMBEDDING_MODEL_PATH` | `/model/Qwen3-VL-Embedding-2B` | Embedding model path |
+| `RERANKER_MODEL_PATH` | `/model/Qwen3-VL-Reranker-2B` | Reranker model path |
+| `USE_EMBEDDING_GPU` | `true` | Enable GPU for embedding |
+| `USE_RERANKER_GPU` | `true` | Enable GPU for reranker |
+| `EMBEDDING_CUDA_DEVICE` | `0` | Physical GPU ID for embedding |
+| `RERANKER_CUDA_DEVICE` | `1` | Physical GPU ID for reranker |
+
+`unified_server.py` 在导入 `torch` 前设置 `CUDA_VISIBLE_DEVICES`，确保两个模型加载到正确的物理 GPU。
 
 ## Key Constants
 

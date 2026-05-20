@@ -32,8 +32,21 @@ def main():
     print(f"Loaded environment from: {env_file}")
     print(f"Working directory: {project_root}")
 
-    port = int(os.environ["API_PORT"])
-    workers = int(os.environ.get("UVICORN_WORKERS", "1"))
+    api_port = os.environ.get("API_PORT")
+    if not api_port:
+        raise SystemExit("API_PORT is required in embedding_reranker.env")
+    try:
+        port = int(api_port)
+    except ValueError as exc:
+        raise SystemExit(f"API_PORT must be an integer, got {api_port!r}") from exc
+
+    workers_value = os.environ.get("UVICORN_WORKERS", "1")
+    try:
+        workers = int(workers_value)
+    except ValueError as exc:
+        raise SystemExit(f"UVICORN_WORKERS must be an integer, got {workers_value!r}") from exc
+    if workers != 1:
+        raise SystemExit("UVICORN_WORKERS must be 1 because each worker loads both GPU models")
 
     use_embedding_gpu = os.environ.get("USE_EMBEDDING_GPU", "true").lower() in ("true", "1", "yes")
     use_reranker_gpu = os.environ.get("USE_RERANKER_GPU", "true").lower() in ("true", "1", "yes")
