@@ -2,102 +2,89 @@
 
 ## Services Overview
 
-| Service | Port | Description |
-|---------|------|-------------|
-| Raw APIs | 10011/10012 | Embedding (10011) + Reranker (10012), loaded in separate processes |
-| OpenAI Proxy | 10013 | OpenAI-compatible API (for Dify) |
+Both models are served by one FastAPI app on port configured by `API_PORT`. Routes distinguish the model service.
+
+| Service | Route Prefix | Description |
+|---------|--------------|-------------|
+| Embedding | `/embedding` | Embedding API |
+| Reranker | `/reranker` | Reranker API |
+
+Compatibility aliases are also available on the same port: `/embeddings`, `/encode`, and `/rerank`.
 
 ## Quick Start
 
-### Start All Services
-```bash
-# Start separate embedding and reranker services (ports 10011, 10012)
-.venv/bin/python servers/start_combined.py
-
-# OR start OpenAI-compatible proxy (port 10013) - Recommended for Dify
-.venv/bin/python servers/openai_proxy.py
-```
-
-The raw services run as two separate processes so each port loads only its own model.
-
-## Services
-
-| Service | Port | Model Path |
-|---------|------|------------|
-| Embedding | 10011 | /model/Qwen3-VL-Embedding-2B |
-| Reranker | 10012 | /model/Qwen3-VL-Reranker-2B |
-
-## Quick Start
-
-### Manual Start
 ```bash
 cd /data/Qwen3-VL-Embedding
 .venv/bin/python servers/start_combined.py
 ```
 
-This starts both services:
-- Embedding: http://0.0.0.0:10011
-- Reranker: http://0.0.0.0:10012
+This starts one service:
+- Unified API: http://0.0.0.0:${API_PORT}
+- Embedding routes: `/embedding/health`, `/embedding/embeddings`, `/embedding/encode`
+- Reranker routes: `/reranker/health`, `/reranker/rerank`
+
+## Configuration
+
+Model and device settings are read from `embedding_reranker.env`.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `API_PORT` | set in `embedding_reranker.env` | Unified API port |
+| `EMBEDDING_MODEL_PATH` | `/model/Qwen3-VL-Embedding-2B` | Embedding model path |
+| `RERANKER_MODEL_PATH` | `/model/Qwen3-VL-Reranker-2B` | Reranker model path |
+| `USE_EMBEDDING_GPU` / `USE_RERANKER_GPU` | `true` | Enable GPU per model |
+| `EMBEDDING_CUDA_DEVICE` / `RERANKER_CUDA_DEVICE` | `0` / `1` | Physical GPU IDs |
 
 ## Systemd Service Setup
 
-### 1. Copy service file to systemd directory
 ```bash
 sudo cp /data/Qwen3-VL-Embedding/embedding_reranker.service /etc/systemd/system/
-```
-
-### 2. Reload systemd daemon
-```bash
 sudo systemctl daemon-reload
-```
-
-### 3. Enable and start service
-```bash
-# Start the API service
-sudo systemctl start embedding_reranker.service
-sudo systemctl enable embedding_reranker.service
-```
-
-### 4. Check service status
-```bash
+sudo systemctl restart embedding_reranker.service
 sudo systemctl status embedding_reranker.service
 ```
 
-### 5. View logs
+View logs:
+
 ```bash
 sudo journalctl -u embedding_reranker.service -f
 ```
 
 ## API Endpoints
 
-### Health & Info
+### Health Checks
 
-**Health Check (both ports)**
+Load the port before running shell examples:
+
 ```bash
-curl http://localhost:10011/health
-curl http://localhost:10012/health
+source embedding_reranker.env
 ```
 
-### Embedding Endpoints (Port 10011)
-
-**Generate Embeddings**
 ```bash
-curl -X POST "http://localhost:10011/embeddings" \
+curl http://localhost:${API_PORT}/health
+curl http://localhost:${API_PORT}/embedding/health
+curl http://localhost:${API_PORT}/reranker/health
+```
+
+### Embedding
+
+```bash
+curl -X POST "http://localhost:${API_PORT}/embedding/embeddings" \
   -H "Content-Type: application/json" \
   -d '{
     "inputs": [
       {"text": "A woman playing with her dog on a beach at sunset."},
       {"text": "A woman shares a joyful moment with her golden retriever."},
-      {"image": "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-VL/assets/demo.jpeg"},
-      {"text": "Beach sunset with dog", "image": "https://example.com/image.jpg"}
+      {"image": "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-VL/assets/demo.jpeg"}
     ],
     "normalize": true
   }'
 ```
 
-**Alternative Embed Endpoint**
+Alternative encode route:
+
 ```bash
-curl -X POST "http://localhost:10011/embed?normalize=true" \
+curl -X POST "http://localhost:${API_PORT}/embedding/encode?normalize=true" \
   -H "Content-Type: application/json" \
   -d '[
     {"text": "Query text"},
@@ -105,87 +92,43 @@ curl -X POST "http://localhost:10011/embed?normalize=true" \
   ]'
 ```
 
-### Reranker Endpoints (Port 10012)
+### Reranker
 
-**Rerank Documents (Text + Image)**
 ```bash
-curl -X POST "http://localhost:10012/rerank" \
+curl -X POST "http://localhost:${API_PORT}/reranker/rerank" \
   -H "Content-Type: application/json" \
   -d '{
-    "instruction": "Retrieve images or text relevant to the user'"'"'s query.",
-    "query": {"text": "A woman playing with her dog on a beach at sunset."},
-    "documents": [
-      {"text": "A woman shares a joyful moment with her golden retriever on a sun-drenched beach at sunset, as the dog offers its paw in a heartwarming display of companionship and trust."},
-      {"image": "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-VL/assets/demo.jpeg"},
-      {"text": "A woman shares a joyful moment with her golden retriever on a sun-drenched beach at sunset, as the dog offers its paw in a heartwarming display of companionship and trust.", 
-       "image": "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-VL/assets/demo.jpeg"}
-    ],
-    "fps": 1.0, 
-    "max_frames": 64
-  }'
-```
-
-## Stop Service
-```bash
-sudo systemctl stop embedding_reranker.service
-```
-
-## Disable Service (do not start on boot)
-```bash
-sudo systemctl disable embedding_reranker.service
-```
-
-## Input Format Examples
-
-### Text Only
-```json
-{"text": "This is a text input"}
-```
-
-### Image Only
-```json
-{"image": "https://example.com/image.jpg"}
-```
-
-### Text + Image
-```json
-{"text": "Describe this image", "image": "https://example.com/image.jpg"}
-```
-
-### With Instruction (Embedding)
-```json
-{
-  "text": "Product review analysis",
-  "instruction": "Encode reviews for sentiment analysis"
-}
-```
-
-## Python Client Example
-
-```python
-import requests
-
-# Embedding
-response = requests.post("http://localhost:10011/embeddings", json={
-    "inputs": [
-        {"text": "Query"},
-        {"text": "Document"}
-    ],
-    "normalize": True
-})
-embeddings = response.json()["embeddings"]
-
-# Reranker (Text + Image)
-response = requests.post("http://localhost:10012/rerank", json={
     "instruction": "Retrieve images or text relevant to the user's query.",
     "query": {"text": "A woman playing with her dog on a beach at sunset."},
     "documents": [
-        {"text": "A woman shares a joyful moment with her golden retriever..."},
-        {"image": "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-VL/assets/demo.jpeg"},
-        {"text": "...", "image": "..."}
+      {"text": "A woman shares a joyful moment with her golden retriever."},
+      {"image": "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-VL/assets/demo.jpeg"}
     ],
-    "fps": 1.0,
-    "max_frames": 64
-})
-scores = response.json()["scores"]
+    "batch_size": 1
+  }'
+```
+
+## Dify Knowledge Base
+
+Use the same base URL for both embedding and reranker providers:
+
+```text
+http://<host>:${API_PORT}
+```
+
+Dify should call these paths on that base URL:
+
+```text
+POST /v1/embeddings
+POST /v1/rerank
+GET  /v1/models
+```
+
+The `/v1/embeddings` response follows OpenAI embedding format. The `/v1/rerank` response follows a Cohere-style rerank shape with `results`, `scores`, and `relevance_score`.
+
+## Stop or Disable Service
+
+```bash
+sudo systemctl stop embedding_reranker.service
+sudo systemctl disable embedding_reranker.service
 ```

@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """
 Reranker API Server for Qwen3-VL-Reranker
-Port: 10012
+Port: configured by API_PORT
 """
 
 import os
-import sys
 
 # 在导入 torch 之前设置 GPU 配置
 # 读取.env 文件中的配置
@@ -18,7 +17,7 @@ if os.path.exists(env_file):
             if line and not line.startswith('#') and '=' in line:
                 key, value = line.split('=', 1)
                 key, value = key.strip(), value.strip()
-                if key in ('USE_RERANKER_GPU', 'RERANKER_CUDA_DEVICE'):
+                if key in ('USE_RERANKER_GPU', 'RERANKER_CUDA_DEVICE', 'RERANKER_MODEL_PATH', 'MODEL_DTYPE', 'API_PORT'):
                     os.environ.setdefault(key, value)
 
 # 设置 CUDA_VISIBLE_DEVICES（在导入 torch 之前）
@@ -28,9 +27,6 @@ RERANKER_CUDA_DEVICE = os.environ.get("RERANKER_CUDA_DEVICE", "0")
 # 检查 GPU 可用性
 if USE_RERANKER_GPU:
     os.environ["CUDA_VISIBLE_DEVICES"] = str(RERANKER_CUDA_DEVICE)
-
-import logging
-import torch
 
 import logging
 import torch
@@ -141,5 +137,6 @@ async def rerank(input_data: RerankerInput) -> RerankerResponse:
 
 
 if __name__ == "__main__":
-    logger.info("Starting Reranker Server on port 10012...")
-    uvicorn.run(app, host="0.0.0.0", port=10012)
+    port = int(os.environ["API_PORT"])
+    logger.info(f"Starting Reranker Server on port {port}...")
+    uvicorn.run(app, host="0.0.0.0", port=port)
