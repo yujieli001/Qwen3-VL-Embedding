@@ -385,7 +385,12 @@ class Qwen3VLEmbedder():
         return hidden_state[row, col]
 
     # Process inputs to generate normalized embeddings
-    def process(self, inputs: List[Dict[str, Any]], normalize: bool = True) -> tuple:
+    def process(self, inputs: List[Dict[str, Any]], normalize: bool = True) -> torch.Tensor:
+        if not inputs:
+            raise ValueError("inputs cannot be empty")
+        if not isinstance(inputs, list):
+            raise ValueError(f"inputs must be a list, got {type(inputs).__name__}")
+
         conversations = [self.format_model_input(
             text=ele.get('text'),
             image=ele.get('image'),

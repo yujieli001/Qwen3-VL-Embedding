@@ -9,6 +9,7 @@ import binascii
 import io
 import logging
 import os
+import time
 from typing import Any, Dict, List, Optional, Union
 
 
@@ -62,6 +63,15 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Qwen3-VL Embedding and Reranker Service", version="1.0.0")
 
+# Request logging middleware
+@app.middleware("http")
+async def log_requests(request, call_next):
+    start_time = time.time()
+    response = await call_next(request)
+    duration = time.time() - start_time
+    logger.info(f"{request.method} {request.url.path} - Status: {response.status_code} - Duration: {duration:.2f}s")
+    return response
+
 embedding_model: Optional[Qwen3VLEmbedder] = None
 reranker_model: Optional[Qwen3VLReranker] = None
 
@@ -112,6 +122,9 @@ class V1RerankerRequest(BaseModel):
     documents: List[Any]
     model: str = "qwen3-vl-reranker-2b"
     batch_size: int = Field(default=1, gt=0)
+    top_n: Optional[int] = Field(default=None, gt=0)
+    return_documents: bool = True
+    instruction: Optional[str] = None
 
 
 class V1RerankerResult(BaseModel):
@@ -157,9 +170,17 @@ def _sanitize_mm_input(value: Any) -> Dict[str, Any]:
     if text is not None:
         result["text"] = str(text)
 
-    for key in ("image", "video", "instruction", "fps", "max_frames"):
+    for key in ("instruction", "fps", "max_frames"):
         if key in value:
             result[key] = value[key]
+
+    image = value.get("image")
+    if isinstance(image, dict):
+        image = image.get("url")
+    if isinstance(image, str):
+        result["image"] = _normalize_image_url(image)
+    elif image is not None:
+        result["image"] = image
 
     image_url = value.get("image_url")
     if image_url is not None and "image" not in result:
@@ -167,6 +188,12 @@ def _sanitize_mm_input(value: Any) -> Dict[str, Any]:
             image_url = image_url.get("url")
         if isinstance(image_url, str):
             result["image"] = _normalize_image_url(image_url)
+
+    video = value.get("video")
+    if isinstance(video, dict):
+        video = video.get("url") or video.get("path") or video.get("frames")
+    if video is not None:
+        result["video"] = video
 
     return result or {"text": str(value)}
 
@@ -294,29 +321,50 @@ async def startup_event():
 
 
 @app.get("/health")
-async def health_check():
+def health_check():
+    """Health check that verifies model loading status."""
+    embedding_status = "loaded" if embedding_model is not None else "not loaded"
+    reranker_status = "loaded" if reranker_model is not None else "not loaded"
+
+    if embedding_model is None or reranker_model is None:
+        return {
+            "status": "degraded",
+            "services": {
+                "embedding": embedding_status,
+                "reranker": reranker_status,
+            },
+        }
+
     return {
         "status": "healthy",
         "services": {
-            "embedding": "running",
-            "reranker": "running",
+            "embedding": embedding_status,
+            "reranker": reranker_status,
         },
     }
 
 
 @app.get("/embedding/health")
-async def embedding_health_check():
-    return {"status": "healthy", "service": "embedding"}
+def embedding_health_check():
+    return {
+        "status": "healthy" if embedding_model is not None else "degraded",
+        "service": "embedding",
+        "model": "loaded" if embedding_model is not None else "not loaded",
+    }
 
 
 @app.get("/reranker/health")
-async def reranker_health_check():
-    return {"status": "healthy", "service": "reranker"}
+def reranker_health_check():
+    return {
+        "status": "healthy" if reranker_model is not None else "degraded",
+        "service": "reranker",
+        "model": "loaded" if reranker_model is not None else "not loaded",
+    }
 
 
 @app.post("/embeddings")
 @app.post("/embedding/embeddings")
-async def get_embeddings(input_data: EmbeddingInput) -> EmbeddingResponse:
+def get_embeddings(input_data: EmbeddingInput) -> EmbeddingResponse:
     try:
         embeddings = embedding_model.process(input_data.inputs, normalize=input_data.normalize)
         return EmbeddingResponse(
@@ -330,7 +378,7 @@ async def get_embeddings(input_data: EmbeddingInput) -> EmbeddingResponse:
 
 @app.post("/encode")
 @app.post("/embedding/encode")
-async def encode(inputs: List[Dict[str, Any]], normalize: bool = True):
+def encode(inputs: List[Dict[str, Any]], normalize: bool = True):
     try:
         embeddings = embedding_model.process(inputs, normalize=normalize)
         return {
@@ -344,7 +392,7 @@ async def encode(inputs: List[Dict[str, Any]], normalize: bool = True):
 
 @app.post("/rerank")
 @app.post("/reranker/rerank")
-async def rerank(input_data: RerankerInput) -> RerankerResponse:
+def rerank(input_data: RerankerInput) -> RerankerResponse:
     try:
         scores = reranker_model.process({
             "query": input_data.query,
@@ -358,11 +406,12 @@ async def rerank(input_data: RerankerInput) -> RerankerResponse:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/v1/embeddings")
-async def v1_embeddings(request: OpenAIEmbeddingRequest) -> OpenAIEmbeddingResponse:
+def v1_embeddings(request: OpenAIEmbeddingRequest) -> OpenAIEmbeddingResponse:
     try:
         inputs = _embedding_inputs_from_openai(request)
         embeddings = embedding_model.process(inputs, normalize=True)
-        token_count = _token_count(request.input)
+        token_source = request.messages if request.messages is not None else request.input
+        token_count = _token_count(token_source)
         return OpenAIEmbeddingResponse(
             data=[
                 OpenAIEmbeddingData(index=index, embedding=embedding.cpu().tolist())
@@ -382,13 +431,15 @@ async def v1_embeddings(request: OpenAIEmbeddingRequest) -> OpenAIEmbeddingRespo
 
 
 @app.post("/v1/rerank")
-async def v1_rerank(request: V1RerankerRequest) -> V1RerankerResponse:
+def v1_rerank(request: V1RerankerRequest) -> V1RerankerResponse:
     try:
         inputs = {
             "query": _text_input(request.query),
             "documents": [_text_input(document) for document in request.documents],
             "batch_size": request.batch_size,
         }
+        if request.instruction is not None:
+            inputs["instruction"] = request.instruction
         scores = reranker_model.process(inputs)
         results = [
             V1RerankerResult(
@@ -400,6 +451,11 @@ async def v1_rerank(request: V1RerankerRequest) -> V1RerankerResponse:
             for index, document in enumerate(request.documents)
         ]
         results.sort(key=lambda result: result.score, reverse=True)
+        if request.top_n is not None:
+            results = results[:request.top_n]
+        if not request.return_documents:
+            for result in results:
+                result.document = None
         return V1RerankerResponse(
             results=results,
             model=request.model,
@@ -413,7 +469,7 @@ async def v1_rerank(request: V1RerankerRequest) -> V1RerankerResponse:
 
 
 @app.get("/v1/models")
-async def v1_models():
+def v1_models():
     return {
         "object": "list",
         "data": [

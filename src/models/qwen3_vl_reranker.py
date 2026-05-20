@@ -134,14 +134,25 @@ class Qwen3VLReranker():
         self.model.eval()
 
         # Initialize binary classification head for yes/no scoring
-        token_true_id = self.processor.tokenizer.get_vocab()["yes"]
-        token_false_id = self.processor.tokenizer.get_vocab()["no"]
+        vocab = self.processor.tokenizer.get_vocab()
+        if "yes" not in vocab:
+            raise ValueError("Token 'yes' not found in tokenizer vocabulary")
+        if "no" not in vocab:
+            raise ValueError("Token 'no' not found in tokenizer vocabulary")
+        token_true_id = vocab["yes"]
+        token_false_id = vocab["no"]
         self.score_linear = self.get_binary_linear(lm, token_true_id, token_false_id)
         self.score_linear.eval()
         self.score_linear.to(self.device).to(self.model.dtype)
 
     def get_binary_linear(self, model, token_yes: int, token_no: int) -> torch.nn.Linear:
         lm_head_weights = model.lm_head.weight.data
+        vocab_size, hidden_size = lm_head_weights.shape
+
+        if token_yes >= vocab_size:
+            raise ValueError(f"Token ID {token_yes} ('yes') exceeds vocab size {vocab_size}")
+        if token_no >= vocab_size:
+            raise ValueError(f"Token ID {token_no} ('no') exceeds vocab size {vocab_size}")
 
         weight_yes = lm_head_weights[token_yes]
         weight_no = lm_head_weights[token_no]
@@ -373,13 +384,20 @@ class Qwen3VLReranker():
         inputs: Dict,
     ) -> List[float]:
         instruction = inputs.get('instruction', self.default_instruction)
-        batch_size = inputs.get('batch_size')
+        batch_size = inputs.get('batch_size', DEFAULT_BATCH_SIZE)
 
         query = inputs.get("query", {})
         documents = inputs.get("documents", [])
-        
-        if not query or not documents:
-            return []
+
+        # Input validation
+        if not query:
+            raise ValueError("query is required")
+        if not documents:
+            raise ValueError("documents cannot be empty")
+        if not isinstance(batch_size, int) or batch_size <= 0:
+            raise ValueError(f"batch_size must be a positive integer, got {batch_size}")
+        if batch_size > 32:
+            raise ValueError(f"batch_size too large (max: 32), got {batch_size}")
 
         # Format each query-document pair
         pairs = [

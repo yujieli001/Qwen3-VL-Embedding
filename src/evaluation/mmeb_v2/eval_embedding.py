@@ -1,5 +1,6 @@
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = ""
+# GPU 配置由外部环境变量 CUDA_VISIBLE_DEVICES 控制
+# 如需要强制 CPU 评估，请在运行前设置：CUDA_VISIBLE_DEVICES=""
 
 import sys
 import time
@@ -114,7 +115,8 @@ def encode_embeddings(
 
 def main():
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
-    use_cuda = False
+    # 根据 CUDA_VISIBLE_DEVICES 自动检测是否使用 GPU
+    use_cuda = os.environ.get("CUDA_VISIBLE_DEVICES", "") != ""
     if "RANK" in os.environ and dist.is_available() and not dist.is_initialized():
         dist.init_process_group(backend="gloo", timeout=timedelta(minutes=60))
     
@@ -137,32 +139,43 @@ def main():
     os.makedirs(data_args.encode_output_path, exist_ok=True)
 
     # DDP-safe model loading
+    # 根据是否有 GPU 自动选择 dtype: GPU 用 bfloat16, CPU 用 float32
+    model_dtype = torch.bfloat16 if use_cuda else torch.float32
+
     # Step 1: Only rank 0 downloads the model
     if rank == 0:
         print_master(f"[rank=0] Loading the model from: {model_args.model_name_or_path}...")
-        model = MMEBEmbeddingModel.load(
-            model_name_or_path=model_args.model_name_or_path,
-            normalize=model_args.normalize,
-            instruction=model_args.instruction,
-            use_cpu=True,
-            torch_dtype=torch.float32,
-        )
+        print_master(f"[rank=0] Using dtype: {model_dtype} (CUDA available: {use_cuda})")
+        try:
+            model = MMEBEmbeddingModel.load(
+                model_name_or_path=model_args.model_name_or_path,
+                normalize=model_args.normalize,
+                instruction=model_args.instruction,
+                use_cpu=not use_cuda,
+                torch_dtype=model_dtype,
+            )
+        except Exception as e:
+            print_master(f"[ERROR] Failed to load model: {e}")
+            raise
 
     # Step 2: All processes wait until rank 0 finishes downloading
     if torch.distributed.is_initialized():
         torch.distributed.barrier()
-    
+
     # Step 3: Non-master processes load from local cache
     if rank != 0:
-        print_rank(f"Loading the model from cache...")
-        time.sleep(random.randint(2 * rank, 3 * rank))
-        model = MMEBEmbeddingModel.load(
-            model_name_or_path=model_args.model_name_or_path,
-            normalize=model_args.normalize,
-            instruction=model_args.instruction,
-            use_cpu=True,
-            torch_dtype=torch.float32,
-        )
+        print_rank(f"Loading the model from cache (rank {rank})...")
+        try:
+            model = MMEBEmbeddingModel.load(
+                model_name_or_path=model_args.model_name_or_path,
+                normalize=model_args.normalize,
+                instruction=model_args.instruction,
+                use_cpu=not use_cuda,
+                torch_dtype=model_dtype,
+            )
+        except Exception as e:
+            print_rank(f"[ERROR] Failed to load model (rank {rank}): {e}")
+            raise
     
     model.eval()
     if use_cuda:

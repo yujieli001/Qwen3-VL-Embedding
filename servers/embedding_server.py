@@ -85,7 +85,7 @@ def load_model():
         use_cpu=not USE_EMBEDDING_GPU,
         # When CUDA_VISIBLE_DEVICES is set, use cuda:0 which maps to the specified GPU
         device_id=0 if USE_EMBEDDING_GPU else None,
-        dtype=MODEL_DTYPE,
+        torch_dtype=MODEL_DTYPE,
     )
 
     logger.info(f"Embedding model loaded successfully on {device_info}")

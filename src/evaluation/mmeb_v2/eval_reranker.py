@@ -1,5 +1,6 @@
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = ""
+# GPU 配置由外部环境变量 CUDA_VISIBLE_DEVICES 控制
+# 如需要强制 CPU 评估，请在运行前设置：CUDA_VISIBLE_DEVICES=""
 
 import time
 import json
@@ -171,7 +172,8 @@ def rerank_topk_for_queries(
 
 def main():
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
-    use_cuda = False
+    # 根据 CUDA_VISIBLE_DEVICES 自动检测是否使用 GPU
+    use_cuda = os.environ.get("CUDA_VISIBLE_DEVICES", "") != ""
 
     if "RANK" in os.environ and dist.is_available() and not dist.is_initialized():
         dist.init_process_group(backend="gloo", timeout=timedelta(minutes=60))
@@ -181,10 +183,10 @@ def main():
 
     print_master("=== Distributed Setup Initialized (Reranker Eval) ===")
     print_master(f"Master -> ADDR: {os.environ.get('MASTER_ADDR')}, PORT: {os.environ.get('MASTER_PORT')}")
-    print_master(f"World Size: {world_size}")
+    print_master(f"World Size: {world_size}, CUDA available: {use_cuda}")
     if use_cuda:
         print_rank(f"Rank: {rank}, Local Rank: {local_rank} on {torch.cuda.get_device_name()}")
-    
+
     parser = HfArgumentParser((RerankArguments, DataArguments, EvalArguments))
     model_args, data_args, eval_args = parser.parse_args_into_dataclasses()
 
@@ -192,28 +194,39 @@ def main():
         os.path.join(data_args.encode_output_path, 'rerank_output')
     os.makedirs(output_dir, exist_ok=True)
 
+    # 根据是否有 GPU 自动选择 dtype: GPU 用 bfloat16, CPU 用 float32
+    model_dtype = torch.bfloat16 if use_cuda else torch.float32
+
     # -------- Load reranker model (DDP-safe download) --------
     if rank == 0:
         print_master(f"[rank=0] Loading reranker from: {model_args.model_name_or_path}")
-        reranker = Qwen3VLReranker(
-            model_args.model_name_or_path,
-            default_instruction=model_args.instruction,
-            use_cpu=True,
-            torch_dtype=torch.float32,
-        )
+        print_master(f"[rank=0] Using dtype: {model_dtype} (CUDA available: {use_cuda})")
+        try:
+            reranker = Qwen3VLReranker(
+                model_args.model_name_or_path,
+                default_instruction=model_args.instruction,
+                use_cpu=not use_cuda,
+                torch_dtype=model_dtype,
+            )
+        except Exception as e:
+            print_master(f"[ERROR] Failed to load reranker model: {e}")
+            raise
 
     if dist.is_initialized():
         dist.barrier()
 
     if rank != 0:
-        print_rank("Loading reranker from cache...")
-        time.sleep(random.randint(2 * rank, 3 * rank))
-        reranker = Qwen3VLReranker(
-            model_args.model_name_or_path,
-            default_instruction=model_args.instruction,
-            use_cpu=True,
-            torch_dtype=torch.float32,
-        )
+        print_rank(f"Loading reranker from cache (rank {rank})...")
+        try:
+            reranker = Qwen3VLReranker(
+                model_args.model_name_or_path,
+                default_instruction=model_args.instruction,
+                use_cpu=not use_cuda,
+                torch_dtype=model_dtype,
+            )
+        except Exception as e:
+            print_rank(f"[ERROR] Failed to load reranker model (rank {rank}): {e}")
+            raise
 
     with open(data_args.dataset_config, 'r') as yaml_file:
         dataset_configs = yaml.safe_load(yaml_file)

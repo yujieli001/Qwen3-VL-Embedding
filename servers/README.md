@@ -125,7 +125,7 @@ POST /v1/rerank
 GET  /v1/models
 ```
 
-The `/v1/embeddings` response follows OpenAI embedding format and accepts `input` or multimodal `messages`. The `/v1/rerank` response follows a Cohere-style rerank shape with `results`, `scores`, and `relevance_score`; document objects are sanitized to model fields such as `text`, `image`, and `video`.
+The `/v1/embeddings` response follows OpenAI embedding format and accepts `input` or multimodal `messages`. The `/v1/rerank` response follows a Cohere-style rerank shape with `results`, `scores`, and `relevance_score`; it accepts `top_n`, `return_documents`, and `instruction`, and document objects are sanitized to model fields such as `text`, `image`, and `video`.
 
 ## Stop or Disable Service
 
