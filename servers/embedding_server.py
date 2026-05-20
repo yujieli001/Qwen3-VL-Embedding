@@ -18,13 +18,19 @@ if os.path.exists(env_file):
             if line and not line.startswith('#') and '=' in line:
                 key, value = line.split('=', 1)
                 key, value = key.strip(), value.strip()
-                if key in ('USE_GPU', 'CUDA_VISIBLE_DEVICES'):
+                if key in ('USE_EMBEDDING_GPU', 'EMBEDDING_CUDA_DEVICE'):
                     os.environ.setdefault(key, value)
 
 # 设置 CUDA_VISIBLE_DEVICES（在导入 torch 之前）
-USE_GPU = os.environ.get("USE_GPU", "true").lower() in ("true", "1", "yes")
-if not USE_GPU:
-    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+USE_EMBEDDING_GPU = os.environ.get("USE_EMBEDDING_GPU", "true").lower() in ("true", "1", "yes")
+EMBEDDING_CUDA_DEVICE = os.environ.get("EMBEDDING_CUDA_DEVICE", "0")
+
+# 检查 GPU 可用性
+if USE_EMBEDDING_GPU:
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(EMBEDDING_CUDA_DEVICE)
+
+import logging
+import torch
 
 import logging
 import torch
@@ -37,14 +43,15 @@ from src.models.qwen3_vl_embedding import Qwen3VLEmbedder
 
 # 从环境变量读取配置
 EMBEDDING_MODEL_PATH = os.environ.get("EMBEDDING_MODEL_PATH", "/model/Qwen3-VL-Embedding-2B")
-MODEL_DTYPE = torch.bfloat16
+MODEL_DTYPE_STR = os.environ.get("MODEL_DTYPE", "bfloat16")
+MODEL_DTYPE = torch.bfloat16 if MODEL_DTYPE_STR == "bfloat16" else torch.float32
 
 
 def get_device_info():
     """获取设备信息字符串"""
-    if USE_GPU and torch.cuda.is_available():
-        cuda_dev = os.environ.get("CUDA_VISIBLE_DEVICES", "0")
-        return f"cuda:{cuda_dev}" if cuda_dev else "cuda"
+    if USE_EMBEDDING_GPU and torch.cuda.is_available():
+        # CUDA_VISIBLE_DEVICES already set, so cuda:0 maps to the specified GPU
+        return f"cuda:0 (physical GPU {EMBEDDING_CUDA_DEVICE})"
     return "cpu"
 
 # Configure logging
@@ -79,7 +86,9 @@ def load_model():
 
     model = Qwen3VLEmbedder(
         model_name_or_path=EMBEDDING_MODEL_PATH,
-        use_cpu=not USE_GPU,
+        use_cpu=not USE_EMBEDDING_GPU,
+        # When CUDA_VISIBLE_DEVICES is set, use cuda:0 which maps to the specified GPU
+        device_id=0 if USE_EMBEDDING_GPU else None,
         torch_dtype=MODEL_DTYPE,
     )
 

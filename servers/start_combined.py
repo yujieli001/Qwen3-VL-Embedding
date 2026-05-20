@@ -32,24 +32,44 @@ def main():
 
     print(f"Working directory: {project_root}")
 
-    # 从环境变量读取配置
-    use_gpu = os.environ.get("USE_GPU", "true").lower() in ("true", "1", "yes")
-    gpu_config = os.environ.get("CUDA_VISIBLE_DEVICES", "0")
-    env = {**os.environ, "PYTHONPATH": project_root, "USE_GPU": str(use_gpu).lower(), "CUDA_VISIBLE_DEVICES": gpu_config if use_gpu else ""}
+    # 从环境变量读取配置（各模型独立控制）
+    use_embedding_gpu = os.environ.get("USE_EMBEDDING_GPU", "true").lower() in ("true", "1", "yes")
+    use_reranker_gpu = os.environ.get("USE_RERANKER_GPU", "true").lower() in ("true", "1", "yes")
+    embedding_cuda_device = os.environ.get("EMBEDDING_CUDA_DEVICE", "0")
+    reranker_cuda_device = os.environ.get("RERANKER_CUDA_DEVICE", "0")
 
-    device_type = "GPU" if use_gpu else "CPU"
-    print(f"Device configuration: {device_type} (CUDA_VISIBLE_DEVICES={gpu_config if use_gpu else 'none'})")
+    # 设置 CUDA_VISIBLE_DEVICES
+    if not use_embedding_gpu and not use_reranker_gpu:
+        gpu_env = ""
+        device_type = "CPU"
+    elif use_embedding_gpu and use_reranker_gpu:
+        gpu_env = f"{embedding_cuda_device},{reranker_cuda_device}"
+        device_type = f"GPU (embedding:{embedding_cuda_device}, reranker:{reranker_cuda_device})"
+    elif use_embedding_gpu:
+        gpu_env = str(embedding_cuda_device)
+        device_type = f"GPU (embedding:{embedding_cuda_device})"
+    else:
+        gpu_env = str(reranker_cuda_device)
+        device_type = f"GPU (reranker:{reranker_cuda_device})"
+
+    # 自动设置 MODEL_DTYPE：GPU 用 bfloat16，CPU 用 float32
+    model_dtype = "bfloat16" if (use_embedding_gpu or use_reranker_gpu) else "float32"
+    env = {**os.environ, "PYTHONPATH": project_root, "CUDA_VISIBLE_DEVICES": gpu_env, "MODEL_DTYPE": model_dtype}
+    print(f"Device configuration: {device_type}, MODEL_DTYPE: {model_dtype}")
 
     # Start independent services so each port loads only the model it serves.
+    # Read workers config from env (default to 1 to save GPU memory)
+    workers = os.environ.get("UVICORN_WORKERS", "1")
+
     port_10011 = subprocess.Popen(
-        [sys.executable, "-m", "uvicorn", "servers.embedding_server:app", "--host", "0.0.0.0", "--port", "10011"],
+        [sys.executable, "-m", "uvicorn", "servers.embedding_server:app", "--host", "0.0.0.0", "--port", "10011", "--workers", workers],
         env=env
     )
 
     time.sleep(2)  # Give first server time to start
 
     port_10012 = subprocess.Popen(
-        [sys.executable, "-m", "uvicorn", "servers.reranker_server:app", "--host", "0.0.0.0", "--port", "10012"],
+        [sys.executable, "-m", "uvicorn", "servers.reranker_server:app", "--host", "0.0.0.0", "--port", "10012", "--workers", workers],
         env=env
     )
 

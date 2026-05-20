@@ -174,20 +174,25 @@ class Qwen3VLEmbedder():
     ):
         # Use environment config if use_cpu not explicitly specified
         if use_cpu is None:
-            use_gpu = os.environ.get("USE_GPU", "true").lower() in ("true", "1", "yes")
+            use_gpu = os.environ.get("USE_EMBEDDING_GPU", "true").lower() in ("true", "1", "yes")
             use_cpu = not use_gpu
 
-        # Set CUDA_VISIBLE_DEVICES before determining device
+        # Determine device (CUDA_VISIBLE_DEVICES should be set before this by server code)
         if use_cpu:
-            os.environ["CUDA_VISIBLE_DEVICES"] = ""
-        elif device_id is not None:
-            os.environ["CUDA_VISIBLE_DEVICES"] = str(device_id)
-
-        # Determine device - always use cuda:0 since CUDA_VISIBLE_DEVICES is set
-        if os.environ.get("CUDA_VISIBLE_DEVICES", "") == "":
             self.device = torch.device("cpu")
         else:
-            self.device = torch.device("cuda:0")
+            # Use specified device_id, default to cuda:0
+            # Note: CUDA_VISIBLE_DEVICES should already be set by server code before torch import
+            if device_id is not None:
+                # When CUDA_VISIBLE_DEVICES is set to e.g. "1", cuda:0 maps to physical GPU 1
+                self.device = torch.device(f"cuda:{device_id}")
+            else:
+                # Check if any GPU is available
+                if torch.cuda.is_available():
+                    self.device = torch.device("cuda:0")
+                else:
+                    logger.warning("GPU requested but not available, falling back to CPU")
+                    self.device = torch.device("cpu")
 
         self.max_length = max_length
         self.min_pixels = min_pixels

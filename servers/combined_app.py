@@ -25,13 +25,24 @@ if os.path.exists(env_file):
             if line and not line.startswith('#') and '=' in line:
                 key, value = line.split('=', 1)
                 key, value = key.strip(), value.strip()
-                if key in ('USE_GPU', 'CUDA_VISIBLE_DEVICES'):
+                if key in ('USE_EMBEDDING_GPU', 'USE_RERANKER_GPU', 'EMBEDDING_CUDA_DEVICE', 'RERANKER_CUDA_DEVICE'):
                     os.environ.setdefault(key, value)
 
 # 设置 CUDA_VISIBLE_DEVICES（在导入 torch 之前）
-USE_GPU = os.environ.get("USE_GPU", "true").lower() in ("true", "1", "yes")
-if not USE_GPU:
+USE_EMBEDDING_GPU = os.environ.get("USE_EMBEDDING_GPU", "true").lower() in ("true", "1", "yes")
+USE_RERANKER_GPU = os.environ.get("USE_RERANKER_GPU", "true").lower() in ("true", "1", "yes")
+EMBEDDING_CUDA_DEVICE = os.environ.get("EMBEDDING_CUDA_DEVICE", "0")
+RERANKER_CUDA_DEVICE = os.environ.get("RERANKER_CUDA_DEVICE", "0")
+
+# 根据配置设置可见设备
+if not USE_EMBEDDING_GPU and not USE_RERANKER_GPU:
     os.environ["CUDA_VISIBLE_DEVICES"] = ""
+elif USE_EMBEDDING_GPU and USE_RERANKER_GPU:
+    os.environ["CUDA_VISIBLE_DEVICES"] = f"{EMBEDDING_CUDA_DEVICE},{RERANKER_CUDA_DEVICE}"
+elif USE_EMBEDDING_GPU:
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(EMBEDDING_CUDA_DEVICE)
+else:
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(RERANKER_CUDA_DEVICE)
 
 import logging
 import torch
@@ -50,11 +61,12 @@ RERANKER_MODEL_PATH = os.environ.get("RERANKER_MODEL_PATH", "/model/Qwen3-VL-Rer
 MODEL_DTYPE = torch.bfloat16
 
 
-def get_device_info():
+def get_device_info(model_type: str = "embedding"):
     """获取设备信息字符串"""
-    if USE_GPU and torch.cuda.is_available():
-        cuda_dev = os.environ.get("CUDA_VISIBLE_DEVICES", "0")
-        return f"cuda:{cuda_dev}" if cuda_dev else "cuda"
+    use_gpu = USE_EMBEDDING_GPU if model_type == "embedding" else USE_RERANKER_GPU
+    cuda_dev = EMBEDDING_CUDA_DEVICE if model_type == "embedding" else RERANKER_CUDA_DEVICE
+    if use_gpu and torch.cuda.is_available():
+        return f"cuda:{cuda_dev}"
     return "cpu"
 
 # Configure logging
@@ -101,24 +113,27 @@ def load_models():
     """Load both models using environment config"""
     global embedding_model, reranker_model
 
-    device_info = get_device_info()
+    embedding_device = get_device_info("embedding")
+    reranker_device = get_device_info("reranker")
 
-    logger.info(f"Loading embedding model from {EMBEDDING_MODEL_PATH} on {device_info}...")
+    logger.info(f"Loading embedding model from {EMBEDDING_MODEL_PATH} on {embedding_device}...")
 
     embedding_model = Qwen3VLEmbedder(
         model_name_or_path=EMBEDDING_MODEL_PATH,
-        use_cpu=not USE_GPU,
+        use_cpu=not USE_EMBEDDING_GPU,
+        device_id=int(EMBEDDING_CUDA_DEVICE) if USE_EMBEDDING_GPU else None,
         torch_dtype=MODEL_DTYPE,
     )
-    logger.info(f"Embedding model loaded successfully on {device_info}")
+    logger.info(f"Embedding model loaded successfully on {embedding_device}")
 
-    logger.info(f"Loading reranker model from {RERANKER_MODEL_PATH} on {device_info}...")
+    logger.info(f"Loading reranker model from {RERANKER_MODEL_PATH} on {reranker_device}...")
     reranker_model = Qwen3VLReranker(
         model_name_or_path=RERANKER_MODEL_PATH,
-        use_cpu=not USE_GPU,
+        use_cpu=not USE_RERANKER_GPU,
+        device_id=int(RERANKER_CUDA_DEVICE) if USE_RERANKER_GPU else None,
         torch_dtype=MODEL_DTYPE,
     )
-    logger.info(f"Reranker model loaded successfully on {device_info}")
+    logger.info(f"Reranker model loaded successfully on {reranker_device}")
 
     return embedding_model, reranker_model
 
@@ -160,7 +175,7 @@ async def get_info():
     return ModelInfo(
         embedding_model="Qwen3-VL-Embedding-2B",
         reranker_model="Qwen3-VL-Reranker-2B",
-        device=get_device_info()
+        device=f"embedding:{get_device_info('embedding')}, reranker:{get_device_info('reranker')}"
     )
 
 
